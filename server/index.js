@@ -6,7 +6,11 @@ import jwt from 'jsonwebtoken';
 import nodemailer from 'nodemailer';
 import twilio from 'twilio';
 import { randomUUID } from 'crypto';
+import path from 'path';
+import { existsSync } from 'fs';
+import { fileURLToPath } from 'url';
 
+const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const PORT = Number(process.env.MAILER_PORT || process.env.PORT || 8787);
 const JWT_SECRET = process.env.JWT_SECRET || 'collections-hub-dev-secret-change-me';
 const JWT_EXPIRES_IN = process.env.JWT_EXPIRES_IN || '8h';
@@ -553,6 +557,16 @@ app.post('/api/whatsapp/send', authRequired, requirePermission('communications.s
     return res.status(500).json({ ok: false, error: message });
   }
 });
+
+// Production: serve Vite build from ../dist (same origin as /api)
+const distDir = path.resolve(__dirname, '../dist');
+if (existsSync(distDir)) {
+  app.use(express.static(distDir));
+  app.get(/^(?!\/api).*/, (_req, res) => {
+    res.sendFile(path.join(distDir, 'index.html'));
+  });
+  console.log(`[web] serving static UI from ${distDir}`);
+}
 
 const server = app.listen(PORT);
 

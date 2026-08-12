@@ -23,6 +23,20 @@ A responsive multi-company collections and ISP equipment-recovery application.
 5. Escalate cancelled/non-paying clients to equipment recovery and track until completion.
 6. Review company-wide communication and activity history.
 
+## Deploy on a Linux server
+
+Folder: **`/var/www/collections-hub-mini`**
+
+```bash
+git clone https://github.com/Fortunematenda/collections-hub-mini.git /var/www/collections-hub-mini
+cd /var/www/collections-hub-mini
+bash deploy/setup-server.sh
+nano /var/www/collections-hub-mini/.env
+systemctl restart collections-hub
+```
+
+Full notes: [`deploy/README.md`](deploy/README.md).
+
 ## Run locally
 
 ```bash
@@ -37,9 +51,7 @@ Default admin login (from `.env`):
 - Email: `admin@bretunetech.com`
 - Password: set in `.env` as `ADMIN_PASSWORD`
 
-Email sending uses the `SMTP_*` values in `.env` and requires a valid JWT. WhatsApp remains demo-only until a Business API is connected.
-
-Then open the local URL shown by Vite.
+Email uses `SMTP_*` in `.env`. WhatsApp uses Twilio (`TWILIO_*`) when configured.
 
 ## Build
 
@@ -67,6 +79,4 @@ npm run preview
 
 ## MVP notes
 
-This remains a front-end MVP with in-memory demo data. Spreadsheet parsing works in the browser. Messaging is demo/queued locally until an official WhatsApp/email provider is connected.
-
-Never place WhatsApp, SMTP, database or other production secrets in the browser application.
+Domain data (companies/customers) persists in the browser for the local MVP and in-memory on the API for auth/RBAC/mail. Spreadsheet parsing runs in the browser. Production secrets stay in server `.env` only.

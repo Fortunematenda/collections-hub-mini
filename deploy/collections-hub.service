@@ -1,0 +1,17 @@
+[Unit]
+Description=Collections Hub Mini (API + UI)
+After=network.target
+
+[Service]
+Type=simple
+WorkingDirectory=/var/www/collections-hub-mini
+Environment=NODE_ENV=production
+EnvironmentFile=/var/www/collections-hub-mini/.env
+ExecStart=/usr/bin/node server/index.js
+Restart=on-failure
+RestartSec=5
+User=www-data
+Group=www-data
+
+[Install]
+WantedBy=multi-user.target
