@@ -8,3 +8,5 @@ dist
 .DS_Store
 
 *.tsbuildinfo
+server/data/*.json
+!server/data/.gitkeep

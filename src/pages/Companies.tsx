@@ -42,7 +42,9 @@ export default function Companies() {
               p="lg"
             >
               <div className="company-card-head">
-                <div className="company-logo">{initials(c.name)}</div>
+                <div className="company-logo">
+                  {c.logoUrl ? <img src={c.logoUrl} alt={`${c.name} logo`} /> : initials(c.name)}
+                </div>
                 <div style={{ display: 'flex', gap: 6, flexWrap: 'wrap', justifyContent: 'flex-end' }}>
                   {isActive && (
                     <Badge variant="light" color="indigo">

@@ -133,8 +133,8 @@ export default function CompanyDetails() {
     <>
       <div className="detail-header">
         <Group align="flex-start" gap="md" wrap="nowrap" style={{ flex: 1, minWidth: 0 }}>
-          <div className="company-logo" style={{ width: 52, height: 52, fontSize: 14 }}>
-            {company.logoUrl ? <img src={company.logoUrl} alt="" style={{ width: '100%', height: '100%', objectFit: 'cover', borderRadius: 13 }} /> : initials(company.name)}
+          <div className="company-logo" style={{ width: 56, height: 56, fontSize: 14 }}>
+            {company.logoUrl ? <img src={company.logoUrl} alt={`${company.name} logo`} /> : initials(company.name)}
           </div>
           <div style={{ minWidth: 0 }}>
             <Group gap={8} wrap="wrap">

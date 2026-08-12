@@ -1,4 +1,4 @@
-import React, { createContext, useCallback, useContext, useEffect, useMemo, useState } from 'react';
+import React, { createContext, useCallback, useContext, useEffect, useMemo, useRef, useState } from 'react';
 import * as XLSX from 'xlsx';
 import { notifications } from '@mantine/notifications';
 import {
@@ -46,6 +46,8 @@ import {
   todayIso,
   uid,
 } from '../utils';
+import { getStoredToken } from '../api/auth';
+import { fetchAppData, saveAppData } from '../api/data';
 import { sendMailViaApi } from '../api/mailer';
 import { sendWhatsAppViaApi } from '../api/whatsapp';
 
@@ -225,7 +227,82 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
   const [importFile, setImportFile] = useState('');
   const [mapping, setMapping] = useState<Mapping>({});
   const [importResult, setImportResult] = useState('');
-  const [loading] = useState(false);
+  const [loading, setLoading] = useState(true);
+  const [hydrated, setHydrated] = useState(false);
+  const skipServerSave = useRef(true);
+
+  function applyPersistedData(data: PersistedAppData) {
+    const list = Array.isArray(data.companies) ? data.companies : [];
+    setCompanies(list);
+    const preferred = data.companyId || '';
+    setCompanyId(preferred && list.some((c) => c.id === preferred) ? preferred : list[0]?.id || '');
+    setCustomers(Array.isArray(data.customers) ? data.customers : []);
+    setRecoveries(Array.isArray(data.recoveries) ? data.recoveries : []);
+    setImports(Array.isArray(data.imports) ? data.imports : []);
+    setTemplates(Array.isArray(data.templates) ? data.templates : []);
+    setEquipment(Array.isArray(data.equipment) ? data.equipment : []);
+    setPromises(Array.isArray(data.promises) ? data.promises : []);
+    setPayments(Array.isArray(data.payments) ? data.payments : []);
+    setCommunications(Array.isArray(data.communications) ? data.communications : []);
+    setNotes(Array.isArray(data.notes) ? data.notes : []);
+    setFollowUps(Array.isArray(data.followUps) ? data.followUps : []);
+    setActivities(Array.isArray(data.activities) ? data.activities : []);
+  }
+
+  useEffect(() => {
+    let cancelled = false;
+    async function hydrateFromServer() {
+      const token = getStoredToken();
+      if (!token) {
+        if (!cancelled) {
+          setLoading(false);
+          setHydrated(true);
+          skipServerSave.current = false;
+        }
+        return;
+      }
+
+      const remote = await fetchAppData();
+      if (cancelled) return;
+
+      if (remote.ok) {
+        const remoteCompanies = Array.isArray(remote.data.companies) ? remote.data.companies.length : 0;
+        const localCompanies = persisted?.companies?.length || 0;
+        if (remoteCompanies > 0) {
+          applyPersistedData(remote.data as PersistedAppData);
+        } else if (localCompanies > 0 && persisted) {
+          // First login on this server: publish this browser's data so other browsers can see it
+          applyPersistedData(persisted);
+          await saveAppData(persisted);
+        } else {
+          applyPersistedData({
+            companies: [],
+            companyId: '',
+            customers: [],
+            recoveries: [],
+            imports: [],
+            templates: [],
+            equipment: [],
+            promises: [],
+            payments: [],
+            communications: [],
+            notes: [],
+            followUps: [],
+            activities: [],
+          });
+        }
+      }
+
+      setLoading(false);
+      setHydrated(true);
+      skipServerSave.current = false;
+    }
+
+    void hydrateFromServer();
+    return () => {
+      cancelled = true;
+    };
+  }, []);
 
   useEffect(() => {
     const payload: PersistedAppData = {
@@ -248,6 +325,18 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
     } catch {
       // Quota / private mode — keep working in-memory
     }
+
+    if (!hydrated || skipServerSave.current || !getStoredToken()) return;
+
+    const timer = window.setTimeout(() => {
+      void saveAppData(payload).then((result) => {
+        if (!result.ok) {
+          console.warn('[data] server sync failed:', result.error);
+        }
+      });
+    }, 700);
+
+    return () => window.clearTimeout(timer);
   }, [
     companies,
     companyId,
@@ -262,6 +351,7 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
     notes,
     followUps,
     activities,
+    hydrated,
   ]);
 
   useEffect(() => {

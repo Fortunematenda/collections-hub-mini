@@ -7,7 +7,7 @@ import nodemailer from 'nodemailer';
 import twilio from 'twilio';
 import { randomUUID } from 'crypto';
 import path from 'path';
-import { existsSync } from 'fs';
+import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'fs';
 import { fileURLToPath } from 'url';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
@@ -255,8 +255,47 @@ app.use(
     allowedHeaders: ['Content-Type', 'Authorization'],
   }),
 );
-app.use(express.json({ limit: '1mb' }));
+app.use(express.json({ limit: '10mb' }));
 app.get('/favicon.ico', (_req, res) => res.status(204).end());
+
+const DATA_DIR = path.resolve(__dirname, 'data');
+const DATA_FILE = path.join(DATA_DIR, 'app-store.json');
+
+function emptyAppStore() {
+  return {
+    companies: [],
+    companyId: '',
+    customers: [],
+    recoveries: [],
+    imports: [],
+    templates: [],
+    equipment: [],
+    promises: [],
+    payments: [],
+    communications: [],
+    notes: [],
+    followUps: [],
+    activities: [],
+  };
+}
+
+function readAppStore() {
+  try {
+    if (!existsSync(DATA_FILE)) return emptyAppStore();
+    const parsed = JSON.parse(readFileSync(DATA_FILE, 'utf8'));
+    return { ...emptyAppStore(), ...(parsed && typeof parsed === 'object' ? parsed : {}) };
+  } catch (error) {
+    console.error('[data] read failed:', error instanceof Error ? error.message : error);
+    return emptyAppStore();
+  }
+}
+
+function writeAppStore(payload) {
+  if (!existsSync(DATA_DIR)) mkdirSync(DATA_DIR, { recursive: true });
+  const next = { ...emptyAppStore(), ...payload };
+  writeFileSync(DATA_FILE, JSON.stringify(next, null, 2), 'utf8');
+  return next;
+}
 
 app.get('/api/health', (_req, res) => {
   res.json({
@@ -269,7 +308,46 @@ app.get('/api/health', (_req, res) => {
     host: smtp.host || null,
     from: smtp.from || null,
     twilioFrom: twilioConfigured() ? twilioConfig.from : null,
+    dataStore: existsSync(DATA_FILE) ? 'ready' : 'empty',
   });
+});
+
+app.get('/api/data', authRequired, (_req, res) => {
+  try {
+    return res.json({ ok: true, data: readAppStore() });
+  } catch (error) {
+    const message = error instanceof Error ? error.message : 'Unable to load app data.';
+    return res.status(500).json({ ok: false, error: message });
+  }
+});
+
+app.put('/api/data', authRequired, (req, res) => {
+  try {
+    const body = req.body && typeof req.body === 'object' ? req.body : {};
+    if (!Array.isArray(body.companies)) {
+      return res.status(400).json({ ok: false, error: 'Invalid payload: companies must be an array.' });
+    }
+    const saved = writeAppStore({
+      companies: body.companies || [],
+      companyId: String(body.companyId || ''),
+      customers: Array.isArray(body.customers) ? body.customers : [],
+      recoveries: Array.isArray(body.recoveries) ? body.recoveries : [],
+      imports: Array.isArray(body.imports) ? body.imports : [],
+      templates: Array.isArray(body.templates) ? body.templates : [],
+      equipment: Array.isArray(body.equipment) ? body.equipment : [],
+      promises: Array.isArray(body.promises) ? body.promises : [],
+      payments: Array.isArray(body.payments) ? body.payments : [],
+      communications: Array.isArray(body.communications) ? body.communications : [],
+      notes: Array.isArray(body.notes) ? body.notes : [],
+      followUps: Array.isArray(body.followUps) ? body.followUps : [],
+      activities: Array.isArray(body.activities) ? body.activities : [],
+    });
+    return res.json({ ok: true, data: saved });
+  } catch (error) {
+    const message = error instanceof Error ? error.message : 'Unable to save app data.';
+    console.error('[data]', message);
+    return res.status(500).json({ ok: false, error: message });
+  }
 });
 
 app.post('/api/auth/login', async (req, res) => {
