@@ -1,0 +1,1548 @@
+import React, { createContext, useCallback, useContext, useEffect, useMemo, useState } from 'react';
+import * as XLSX from 'xlsx';
+import { notifications } from '@mantine/notifications';
+import {
+  initialActivities,
+  initialCommunications,
+  initialCompanies,
+  initialCustomers,
+  initialEquipment,
+  initialFollowUps,
+  initialImports,
+  initialNotes,
+  initialPayments,
+  initialPromises,
+  initialRecoveries,
+  initialTemplates,
+} from '../data/seed';
+import type {
+  AccountStatus,
+  Activity,
+  CallResult,
+  CommChannel,
+  CommDirection,
+  Communication,
+  Company,
+  Customer,
+  Equipment,
+  FollowUp,
+  ImportBatch,
+  MessageTemplate,
+  Note,
+  NoteType,
+  Payment,
+  PaymentPromise,
+  PromiseStatus,
+  RecoveryJob,
+  RecoveryStatus,
+} from '../types';
+import {
+  actorName,
+  findColumn,
+  fillTemplate,
+  money,
+  nowIso,
+  safeDate,
+  todayIso,
+  uid,
+} from '../utils';
+import { sendMailViaApi } from '../api/mailer';
+import { sendWhatsAppViaApi } from '../api/whatsapp';
+
+type Mapping = Record<string, string>;
+
+const APP_STORAGE_KEY = 'ch_app_data_v1';
+
+type PersistedAppData = {
+  companies: Company[];
+  companyId: string;
+  customers: Customer[];
+  recoveries: RecoveryJob[];
+  imports: ImportBatch[];
+  templates: MessageTemplate[];
+  equipment: Equipment[];
+  promises: PaymentPromise[];
+  payments: Payment[];
+  communications: Communication[];
+  notes: Note[];
+  followUps: FollowUp[];
+  activities: Activity[];
+};
+
+function loadPersistedAppData(): PersistedAppData | null {
+  try {
+    const raw = localStorage.getItem(APP_STORAGE_KEY);
+    if (!raw) return null;
+    const parsed = JSON.parse(raw) as PersistedAppData;
+    if (!parsed || !Array.isArray(parsed.companies)) return null;
+    return parsed;
+  } catch {
+    return null;
+  }
+}
+
+const persisted = loadPersistedAppData();
+
+const EMPTY_COMPANY: Company = {
+  id: '',
+  name: 'No company selected',
+  code: '',
+  email: '',
+  phone: '',
+  status: 'Active',
+};
+
+type AppContextValue = {
+  companies: Company[];
+  companyId: string;
+  company: Company;
+  showArchivedCompanies: boolean;
+  setShowArchivedCompanies: (v: boolean) => void;
+  switchCompany: (id: string | null) => void;
+  activeCompanies: Company[];
+  customers: Customer[];
+  companyCustomers: Customer[];
+  recoveries: RecoveryJob[];
+  companyRecoveries: RecoveryJob[];
+  imports: ImportBatch[];
+  companyImports: ImportBatch[];
+  templates: MessageTemplate[];
+  companyTemplates: MessageTemplate[];
+  setTemplates: React.Dispatch<React.SetStateAction<MessageTemplate[]>>;
+  saveTemplate: (t: MessageTemplate) => void;
+  equipment: Equipment[];
+  promises: PaymentPromise[];
+  payments: Payment[];
+  communications: Communication[];
+  notes: Note[];
+  followUps: FollowUp[];
+  activities: Activity[];
+  search: string;
+  setSearch: (v: string) => void;
+  statusFilter: string | null;
+  setStatusFilter: (v: string | null) => void;
+  filteredCustomers: Customer[];
+  outstandingCustomers: Customer[];
+  totalOutstanding: number;
+  promiseCustomers: Customer[];
+  recoveryNeeded: number;
+  loading: boolean;
+  // company CRUD
+  addCompany: (c: Omit<Company, 'id'> & { id?: string }) => Company | null;
+  updateCompany: (c: Company) => void;
+  archiveCompany: (id: string) => void;
+  // customer CRUD
+  addCustomer: (c: Partial<Customer> & { companyId: string; accountNo: string; name: string }, equipmentItems?: Partial<Equipment>[]) => Customer | null;
+  updateCustomer: (c: Customer, changes?: string[]) => void;
+  archiveCustomer: (id: string) => void;
+  updateStatus: (customer: Customer, status: AccountStatus) => void;
+  // operational
+  recordPayment: (input: { customerId: string; amount: number; paymentDate: string; reference?: string; notes?: string; clearAccount: boolean }) => void;
+  createPromise: (input: { customerId: string; amount: number; promiseDate: string; customerComment?: string; internalNote?: string }) => void;
+  updatePromiseStatus: (id: string, status: PromiseStatus, outcome?: string) => void;
+  sendMessage: (input: {
+    customerId: string;
+    channel: 'WhatsApp' | 'Email';
+    message: string;
+    subject?: string;
+  }) => Promise<{ ok: boolean; error?: string }>;
+  logCall: (input: { customerId: string; direction: CommDirection; callResult: CallResult; notes: string; followUpRequired?: boolean; followUpDate?: string }) => void;
+  addNote: (input: { customerId: string; note: string; type: NoteType; pinned?: boolean }) => void;
+  deleteNote: (id: string) => void;
+  scheduleFollowUp: (input: { customerId: string; followUpDate: string; followUpTime?: string; channel: CommChannel | 'Any'; assignedUser: string; notes?: string }) => void;
+  cancelService: (input: { customerId: string; cancellationDate: string; reason: string; customerRequested: boolean; recoveryRequired: boolean; notes?: string }) => void;
+  // equipment / recovery
+  addEquipment: (item: Omit<Equipment, 'id'> & { id?: string }) => void;
+  updateEquipment: (item: Equipment) => void;
+  createRecoveryJob: (input: {
+    customerId: string;
+    equipmentIds: string[];
+    reason: string;
+    priority: 'Low' | 'Medium' | 'High';
+    technician: string;
+    scheduledDate?: string;
+    contactInstructions?: string;
+    internalNotes?: string;
+  }) => void;
+  updateRecovery: (job: RecoveryJob) => void;
+  completeRecovery: (input: {
+    jobId: string;
+    outcome: string;
+    condition?: Equipment['condition'];
+    notes?: string;
+    rescheduleDate?: string;
+  }) => void;
+  // import
+  importRows: Record<string, unknown>[];
+  importFile: string;
+  mapping: Mapping;
+  setMapping: React.Dispatch<React.SetStateAction<Mapping>>;
+  importResult: string;
+  handleFile: (file: File) => Promise<void>;
+  commitImport: () => void;
+  // helpers
+  getCustomer: (id: string) => Customer | undefined;
+  getCompany: (id: string) => Company | undefined;
+  companyEquipment: (customerId?: string) => Equipment[];
+  companyPromises: (customerId?: string) => PaymentPromise[];
+  companyPayments: (customerId?: string) => Payment[];
+  companyCommunications: (customerId?: string) => Communication[];
+  companyNotes: (customerId?: string) => Note[];
+  companyFollowUps: (customerId?: string) => FollowUp[];
+  companyActivities: (customerId?: string) => Activity[];
+  toastSuccess: (message: string) => void;
+  toastError: (message: string) => void;
+  addActivity: (partial: Omit<Activity, 'id' | 'createdAt' | 'user'> & { user?: string; createdAt?: string }) => void;
+};
+
+const AppContext = createContext<AppContextValue | null>(null);
+
+export function AppProvider({ children }: { children: React.ReactNode }) {
+  const [companies, setCompanies] = useState<Company[]>(() => persisted?.companies ?? initialCompanies);
+  const [companyId, setCompanyId] = useState(() => {
+    const savedId = persisted?.companyId || '';
+    const list = persisted?.companies ?? initialCompanies;
+    if (savedId && list.some((c) => c.id === savedId)) return savedId;
+    return list[0]?.id || '';
+  });
+  const [showArchivedCompanies, setShowArchivedCompanies] = useState(false);
+  const [customers, setCustomers] = useState<Customer[]>(() => persisted?.customers ?? initialCustomers);
+  const [recoveries, setRecoveries] = useState<RecoveryJob[]>(() => persisted?.recoveries ?? initialRecoveries);
+  const [imports, setImports] = useState<ImportBatch[]>(() => persisted?.imports ?? initialImports);
+  const [templates, setTemplates] = useState<MessageTemplate[]>(() => persisted?.templates ?? initialTemplates);
+  const [equipment, setEquipment] = useState<Equipment[]>(() => persisted?.equipment ?? initialEquipment);
+  const [promises, setPromises] = useState<PaymentPromise[]>(() => persisted?.promises ?? initialPromises);
+  const [payments, setPayments] = useState<Payment[]>(() => persisted?.payments ?? initialPayments);
+  const [communications, setCommunications] = useState<Communication[]>(
+    () => persisted?.communications ?? initialCommunications,
+  );
+  const [notes, setNotes] = useState<Note[]>(() => persisted?.notes ?? initialNotes);
+  const [followUps, setFollowUps] = useState<FollowUp[]>(() => persisted?.followUps ?? initialFollowUps);
+  const [activities, setActivities] = useState<Activity[]>(() => persisted?.activities ?? initialActivities);
+  const [search, setSearch] = useState('');
+  const [statusFilter, setStatusFilter] = useState<string | null>('All statuses');
+  const [importRows, setImportRows] = useState<Record<string, unknown>[]>([]);
+  const [importFile, setImportFile] = useState('');
+  const [mapping, setMapping] = useState<Mapping>({});
+  const [importResult, setImportResult] = useState('');
+  const [loading] = useState(false);
+
+  useEffect(() => {
+    const payload: PersistedAppData = {
+      companies,
+      companyId,
+      customers,
+      recoveries,
+      imports,
+      templates,
+      equipment,
+      promises,
+      payments,
+      communications,
+      notes,
+      followUps,
+      activities,
+    };
+    try {
+      localStorage.setItem(APP_STORAGE_KEY, JSON.stringify(payload));
+    } catch {
+      // Quota / private mode — keep working in-memory
+    }
+  }, [
+    companies,
+    companyId,
+    customers,
+    recoveries,
+    imports,
+    templates,
+    equipment,
+    promises,
+    payments,
+    communications,
+    notes,
+    followUps,
+    activities,
+  ]);
+
+  useEffect(() => {
+    if (!companyId && companies[0]?.id) {
+      setCompanyId(companies[0].id);
+      return;
+    }
+    if (companyId && companies.length > 0 && !companies.some((c) => c.id === companyId)) {
+      setCompanyId(companies.find((c) => c.status !== 'Archived')?.id || companies[0].id);
+    }
+  }, [companies, companyId]);
+
+  const toastSuccess = useCallback((message: string) => {
+    notifications.show({ color: 'teal', message, title: 'Success' });
+  }, []);
+  const toastError = useCallback((message: string) => {
+    notifications.show({ color: 'red', message, title: 'Error' });
+  }, []);
+
+  const addActivity = useCallback(
+    (partial: Omit<Activity, 'id' | 'createdAt' | 'user'> & { user?: string; createdAt?: string }) => {
+      setActivities((prev) => [
+        {
+          id: uid('act'),
+          user: partial.user || actorName(),
+          createdAt: partial.createdAt || nowIso(),
+          companyId: partial.companyId,
+          customerId: partial.customerId,
+          action: partial.action,
+          description: partial.description,
+        },
+        ...prev,
+      ]);
+    },
+    [],
+  );
+
+  const activeCompanies = useMemo(
+    () => companies.filter((c) => (showArchivedCompanies ? true : c.status !== 'Archived')),
+    [companies, showArchivedCompanies],
+  );
+
+  const company = companies.find((c) => c.id === companyId) || companies[0] || EMPTY_COMPANY;
+  const companyCustomers = useMemo(
+    () => customers.filter((c) => c.companyId === companyId && !c.archived),
+    [customers, companyId],
+  );
+  const companyRecoveries = useMemo(() => recoveries.filter((r) => r.companyId === companyId), [recoveries, companyId]);
+  const companyImports = useMemo(() => imports.filter((i) => i.companyId === companyId), [imports, companyId]);
+  const companyTemplates = useMemo(() => templates.filter((t) => t.companyId === companyId), [templates, companyId]);
+  const outstandingCustomers = companyCustomers.filter((c) => c.outstanding > 0 && c.status !== 'Paid');
+  const totalOutstanding = outstandingCustomers.reduce((s, c) => s + c.outstanding, 0);
+  const promiseCustomers = companyCustomers.filter((c) => c.status === 'Promise to Pay');
+  const recoveryNeeded = companyCustomers.filter((c) => c.status === 'Recovery Required').length;
+
+  const filteredCustomers = useMemo(
+    () =>
+      companyCustomers.filter((c) => {
+        const q = search.toLowerCase();
+        const matches = !q || [c.name, c.accountNo, c.phone, c.email].some((v) => (v || '').toLowerCase().includes(q));
+        const statusMatches = !statusFilter || statusFilter === 'All statuses' || c.status === statusFilter;
+        return matches && statusMatches;
+      }),
+    [companyCustomers, search, statusFilter],
+  );
+
+  function switchCompany(id: string | null) {
+    if (!id) return;
+    setCompanyId(id);
+    setSearch('');
+    setStatusFilter('All statuses');
+    setImportRows([]);
+    setImportFile('');
+    setImportResult('');
+  }
+
+  function addCompany(input: Omit<Company, 'id'> & { id?: string }) {
+    if (!input.name.trim()) {
+      toastError('Company name is required.');
+      return null;
+    }
+    const created: Company = {
+      ...input,
+      id: input.id || uid('co'),
+      code: (input.code || input.name.slice(0, 3)).toUpperCase(),
+      status: input.status || 'Active',
+      email: input.email || '',
+      phone: input.phone || '',
+    };
+    setCompanies((prev) => [...prev, created]);
+    setCompanyId(created.id);
+    addActivity({ companyId: created.id, action: 'Company created', description: `${created.name} portfolio created.` });
+    toastSuccess('Company saved successfully.');
+    return created;
+  }
+
+  function updateCompany(updated: Company) {
+    if (!updated.id) {
+      toastError('No company selected to update. Add a company first.');
+      return;
+    }
+    let found = false;
+    setCompanies((prev) => {
+      found = prev.some((c) => c.id === updated.id);
+      if (!found) return prev;
+      return prev.map((c) => (c.id === updated.id ? { ...c, ...updated, id: c.id } : c));
+    });
+    if (!found) {
+      toastError('Company was not found — it may have been cleared. Please add it again.');
+      return;
+    }
+    addActivity({ companyId: updated.id, action: 'Company updated', description: `${updated.name} details updated.` });
+    toastSuccess('Company updated successfully.');
+  }
+
+  function archiveCompany(id: string) {
+    setCompanies((prev) => prev.map((c) => (c.id === id ? { ...c, status: 'Archived' as const } : c)));
+    const remaining = companies.filter((c) => c.id !== id && c.status !== 'Archived');
+    if (companyId === id && remaining[0]) setCompanyId(remaining[0].id);
+    addActivity({ companyId: id, action: 'Company archived', description: 'Company archived and hidden from the active switcher.' });
+    toastSuccess('Company archived.');
+  }
+
+  function accountExists(companyIdValue: string, accountNo: string, excludeId?: string) {
+    return customers.some(
+      (c) =>
+        c.companyId === companyIdValue &&
+        c.accountNo.toLowerCase() === accountNo.toLowerCase() &&
+        c.id !== excludeId &&
+        !c.archived,
+    );
+  }
+
+  function addCustomer(
+    input: Partial<Customer> & { companyId: string; accountNo: string; name: string },
+    equipmentItems?: Partial<Equipment>[],
+  ) {
+    if (!input.accountNo.trim() || !input.name.trim()) {
+      toastError('Account number and customer name are required.');
+      return null;
+    }
+    if (accountExists(input.companyId, input.accountNo)) {
+      toastError('Account number already exists for this company.');
+      return null;
+    }
+    const created: Customer = {
+      id: uid('c'),
+      companyId: input.companyId,
+      accountNo: input.accountNo.trim(),
+      name: input.name.trim(),
+      firstName: input.firstName,
+      lastName: input.lastName,
+      phone: input.phone || '',
+      whatsapp: input.whatsapp,
+      alternativePhone: input.alternativePhone,
+      email: input.email || '',
+      outstanding: input.outstanding || 0,
+      originalOutstanding: input.originalOutstanding ?? input.outstanding ?? 0,
+      dueDate: input.dueDate || todayIso(),
+      status: input.status || (input.outstanding && input.outstanding > 0 ? 'Payment Due' : 'Paid'),
+      collectionStage: input.collectionStage || (input.outstanding && input.outstanding > 0 ? 'New Overdue' : 'Closed'),
+      lastContact: 'Not contacted',
+      equipment: input.equipment,
+      address: input.address,
+      suburb: input.suburb,
+      city: input.city,
+      province: input.province,
+      postalCode: input.postalCode,
+      latitude: input.latitude,
+      longitude: input.longitude,
+      customerReference: input.customerReference,
+      servicePackage: input.servicePackage,
+      monthlySubscription: input.monthlySubscription,
+      billingNotes: input.billingNotes,
+      notes: input.notes,
+      preferredContact: input.preferredContact,
+      language: input.language,
+      assignedCollector: input.assignedCollector || actorName(),
+      nextFollowUp: input.nextFollowUp,
+    };
+    setCustomers((prev) => [created, ...prev]);
+    if (equipmentItems?.length) {
+      setEquipment((prev) => [
+        ...equipmentItems.map((e) => ({
+          id: uid('eq'),
+          companyId: created.companyId,
+          customerId: created.id,
+          type: e.type || 'Other',
+          manufacturer: e.manufacturer,
+          model: e.model,
+          serialNumber: e.serialNumber,
+          macAddress: e.macAddress,
+          assetTag: e.assetTag,
+          ownership: e.ownership || 'Company owned',
+          installationDate: e.installationDate,
+          condition: e.condition || 'Good',
+          status: e.status || 'Installed',
+          notes: e.notes,
+          recoveryRequired: e.recoveryRequired,
+        })),
+        ...prev,
+      ]);
+    }
+    addActivity({
+      companyId: created.companyId,
+      customerId: created.id,
+      action: 'Customer created',
+      description: `Customer ${created.name} (${created.accountNo}) created.`,
+    });
+    toastSuccess('Customer created successfully.');
+    return created;
+  }
+
+  function updateCustomer(updated: Customer, changes: string[] = []) {
+    if (accountExists(updated.companyId, updated.accountNo, updated.id)) {
+      toastError('Account number already exists for this company.');
+      return;
+    }
+    const prev = customers.find((c) => c.id === updated.id);
+    setCustomers((list) => list.map((c) => (c.id === updated.id ? updated : c)));
+    const desc =
+      changes.length > 0
+        ? changes.join(' ')
+        : prev && prev.outstanding !== updated.outstanding
+          ? `Outstanding balance updated from ${money(prev.outstanding)} to ${money(updated.outstanding)}.`
+          : `Customer ${updated.name} updated.`;
+    addActivity({
+      companyId: updated.companyId,
+      customerId: updated.id,
+      action: 'Customer edited',
+      description: desc,
+    });
+    toastSuccess('Customer updated successfully.');
+  }
+
+  function archiveCustomer(id: string) {
+    const customer = customers.find((c) => c.id === id);
+    if (!customer) return;
+    setCustomers((prev) => prev.map((c) => (c.id === id ? { ...c, archived: true, status: 'Cancelled' } : c)));
+    addActivity({
+      companyId: customer.companyId,
+      customerId: id,
+      action: 'Customer archived',
+      description: `Customer ${customer.name} archived.`,
+    });
+    toastSuccess('Customer archived.');
+  }
+
+  function updateStatus(customer: Customer, status: AccountStatus) {
+    setCustomers((prev) =>
+      prev.map((c) =>
+        c.id === customer.id
+          ? {
+              ...c,
+              status,
+              collectionStage:
+                status === 'Paid'
+                  ? 'Paid'
+                  : status === 'Promise to Pay'
+                    ? 'Promise to Pay'
+                    : status === 'Recovery Required'
+                      ? 'Recovery Required'
+                      : status === 'Cancelled'
+                        ? 'Service Cancelled'
+                        : status === 'Unresponsive'
+                          ? 'Unresponsive'
+                          : status === 'Follow-up'
+                            ? 'Follow-up Due'
+                            : 'New Overdue',
+              lastContact: `Updated · ${new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}`,
+            }
+          : c,
+      ),
+    );
+    if (status === 'Recovery Required' && !recoveries.some((r) => r.customerId === customer.id && !['Recovered', 'Closed', 'Written Off'].includes(r.status))) {
+      const eq = equipment.filter((e) => e.customerId === customer.id && e.ownership === 'Company owned');
+      setRecoveries((prev) => [
+        {
+          id: `REC-${String(282 + prev.length).padStart(5, '0')}`,
+          companyId: customer.companyId,
+          customerId: customer.id,
+          status: 'Awaiting assignment',
+          equipment: customer.equipment || eq.map((e) => e.model || e.type).join(' + ') || 'CPE / antenna',
+          equipmentIds: eq.map((e) => e.id),
+          technician: 'Unassigned',
+          reason: 'Recovery required',
+          priority: 'Medium',
+          attempts: 0,
+        },
+        ...prev,
+      ]);
+      setEquipment((prev) =>
+        prev.map((e) =>
+          e.customerId === customer.id && e.ownership === 'Company owned'
+            ? { ...e, recoveryRequired: true, status: 'Awaiting recovery' }
+            : e,
+        ),
+      );
+    }
+    addActivity({
+      companyId: customer.companyId,
+      customerId: customer.id,
+      action: 'Status updated',
+      description: `Status changed to ${status}.`,
+    });
+  }
+
+  function recordPayment(input: {
+    customerId: string;
+    amount: number;
+    paymentDate: string;
+    reference?: string;
+    notes?: string;
+    clearAccount: boolean;
+  }) {
+    const customer = customers.find((c) => c.id === input.customerId);
+    if (!customer) return;
+    const payment: Payment = {
+      id: uid('pay'),
+      companyId: customer.companyId,
+      customerId: customer.id,
+      amount: input.amount,
+      paymentDate: input.paymentDate,
+      reference: input.reference,
+      method: 'Manual',
+      notes: input.notes,
+      recordedBy: actorName(),
+      clearedAccount: input.clearAccount,
+      createdAt: nowIso(),
+    };
+    setPayments((prev) => [payment, ...prev]);
+    const nextOutstanding = input.clearAccount ? 0 : Math.max(0, customer.outstanding - input.amount);
+    setCustomers((prev) =>
+      prev.map((c) =>
+        c.id === customer.id
+          ? {
+              ...c,
+              outstanding: nextOutstanding,
+              status: nextOutstanding === 0 || input.clearAccount ? 'Paid' : c.status,
+              collectionStage: nextOutstanding === 0 || input.clearAccount ? 'Paid' : 'Payment Pending',
+              lastContact: `Payment · ${safeDate(input.paymentDate)}`,
+            }
+          : c,
+      ),
+    );
+    setPromises((prev) =>
+      prev.map((p) =>
+        p.customerId === customer.id && p.status === 'Pending'
+          ? { ...p, status: 'Kept' as const, outcome: 'Payment recorded' }
+          : p,
+      ),
+    );
+    addActivity({
+      companyId: customer.companyId,
+      customerId: customer.id,
+      action: 'Payment recorded',
+      description: `Payment of ${money(input.amount)} recorded${input.clearAccount ? '. Account marked as fully cleared.' : '.'}`,
+    });
+    setCommunications((prev) => [
+      {
+        id: uid('cm'),
+        companyId: customer.companyId,
+        customerId: customer.id,
+        channel: 'Internal note',
+        direction: 'Internal',
+        message: `Payment of ${money(input.amount)} recorded${input.reference ? ` (ref ${input.reference})` : ''}.`,
+        status: 'Logged',
+        createdAt: nowIso(),
+        createdBy: actorName(),
+      },
+      ...prev,
+    ]);
+    toastSuccess('Payment recorded successfully.');
+  }
+
+  function createPromise(input: {
+    customerId: string;
+    amount: number;
+    promiseDate: string;
+    customerComment?: string;
+    internalNote?: string;
+  }) {
+    const customer = customers.find((c) => c.id === input.customerId);
+    if (!customer) return;
+    const promise: PaymentPromise = {
+      id: uid('pr'),
+      companyId: customer.companyId,
+      customerId: customer.id,
+      amount: input.amount,
+      promiseDate: input.promiseDate,
+      createdAt: nowIso(),
+      status: 'Pending',
+      customerComment: input.customerComment,
+      internalNote: input.internalNote,
+    };
+    setPromises((prev) => [promise, ...prev]);
+    setCustomers((prev) =>
+      prev.map((c) =>
+        c.id === customer.id
+          ? {
+              ...c,
+              status: 'Promise to Pay',
+              collectionStage: 'Promise to Pay',
+              promisedDate: input.promiseDate,
+              promisedAmount: input.amount,
+              nextFollowUp: input.promiseDate,
+              lastContact: `Promise · ${safeDate(input.promiseDate)}`,
+            }
+          : c,
+      ),
+    );
+    setFollowUps((prev) => [
+      {
+        id: uid('fu'),
+        companyId: customer.companyId,
+        customerId: customer.id,
+        followUpDate: input.promiseDate,
+        channel: 'Any',
+        assignedUser: customer.assignedCollector || actorName(),
+        notes: `Follow up on promise of ${money(input.amount)}`,
+        createdAt: nowIso(),
+      },
+      ...prev,
+    ]);
+    addActivity({
+      companyId: customer.companyId,
+      customerId: customer.id,
+      action: 'Promise created',
+      description: `Promise to pay ${money(input.amount)} recorded for ${safeDate(input.promiseDate)}.`,
+    });
+    toastSuccess('Promise to pay recorded.');
+  }
+
+  function updatePromiseStatus(id: string, status: PromiseStatus, outcome?: string) {
+    const promise = promises.find((p) => p.id === id);
+    if (!promise) return;
+    setPromises((prev) => prev.map((p) => (p.id === id ? { ...p, status, outcome } : p)));
+    if (status === 'Broken') {
+      setCustomers((prev) =>
+        prev.map((c) =>
+          c.id === promise.customerId
+            ? { ...c, status: 'Follow-up', collectionStage: 'Follow-up Due', lastContact: 'Promise broken' }
+            : c,
+        ),
+      );
+      addActivity({
+        companyId: promise.companyId,
+        customerId: promise.customerId,
+        action: 'Promise broken',
+        description: `Promise of ${money(promise.amount)} marked as broken.`,
+      });
+    }
+  }
+
+  async function sendMessage(input: {
+    customerId: string;
+    channel: 'WhatsApp' | 'Email';
+    message: string;
+    subject?: string;
+  }): Promise<{ ok: boolean; error?: string }> {
+    const customer = customers.find((c) => c.id === input.customerId);
+    if (!customer) return { ok: false, error: 'Customer not found.' };
+
+    if (input.channel === 'WhatsApp') {
+      const to = (customer.whatsapp || customer.phone || '').trim();
+      if (!to) {
+        toastError('This customer has no WhatsApp or mobile number.');
+        return { ok: false, error: 'Customer WhatsApp number is missing.' };
+      }
+
+      const company = companies.find((c) => c.id === customer.companyId);
+      const result = await sendWhatsAppViaApi({
+        to,
+        message: input.message,
+        from: company?.whatsappSender || company?.whatsappNumber,
+        customerName: customer.name,
+        accountNo: customer.accountNo,
+      });
+
+      if (!result.ok) {
+        setCommunications((prev) => [
+          {
+            id: uid('cm'),
+            companyId: customer.companyId,
+            customerId: customer.id,
+            channel: 'WhatsApp',
+            direction: 'Outgoing',
+            message: input.message,
+            status: 'Failed',
+            createdAt: nowIso(),
+            createdBy: actorName(),
+          },
+          ...prev,
+        ]);
+        addActivity({
+          companyId: customer.companyId,
+          customerId: customer.id,
+          action: 'Message failed',
+          description: `WhatsApp failed: ${result.error}`,
+        });
+        toastError(result.error);
+        return { ok: false, error: result.error };
+      }
+
+      setCommunications((prev) => [
+        {
+          id: uid('cm'),
+          companyId: customer.companyId,
+          customerId: customer.id,
+          channel: 'WhatsApp',
+          direction: 'Outgoing',
+          message: input.message,
+          status: 'Sent',
+          createdAt: nowIso(),
+          createdBy: actorName(),
+        },
+        ...prev,
+      ]);
+      setCustomers((prev) =>
+        prev.map((c) =>
+          c.id === customer.id
+            ? {
+                ...c,
+                lastContact: 'WhatsApp · sent',
+                status: c.status === 'Payment Due' ? 'Follow-up' : c.status,
+                collectionStage: c.collectionStage === 'New Overdue' ? 'Contacted' : c.collectionStage,
+              }
+            : c,
+        ),
+      );
+      addActivity({
+        companyId: customer.companyId,
+        customerId: customer.id,
+        action: 'Message sent',
+        description: 'WhatsApp message sent via Twilio.',
+      });
+      toastSuccess('WhatsApp message sent.');
+      return { ok: true };
+    }
+
+    const to = (customer.email || '').trim();
+    if (!to || !to.includes('@')) {
+      toastError('This customer has no valid email address.');
+      return { ok: false, error: 'Customer email is missing.' };
+    }
+
+    const result = await sendMailViaApi({
+      to,
+      subject: input.subject || `Account ${customer.accountNo} outstanding balance`,
+      text: input.message,
+      customerName: customer.name,
+      accountNo: customer.accountNo,
+    });
+
+    if (!result.ok) {
+      setCommunications((prev) => [
+        {
+          id: uid('cm'),
+          companyId: customer.companyId,
+          customerId: customer.id,
+          channel: 'Email',
+          direction: 'Outgoing',
+          subject: input.subject,
+          message: input.message,
+          status: 'Failed',
+          createdAt: nowIso(),
+          createdBy: actorName(),
+        },
+        ...prev,
+      ]);
+      addActivity({
+        companyId: customer.companyId,
+        customerId: customer.id,
+        action: 'Message failed',
+        description: `Email failed: ${result.error}`,
+      });
+      toastError(result.error);
+      return { ok: false, error: result.error };
+    }
+
+    setCommunications((prev) => [
+      {
+        id: uid('cm'),
+        companyId: customer.companyId,
+        customerId: customer.id,
+        channel: 'Email',
+        direction: 'Outgoing',
+        subject: input.subject,
+        message: input.message,
+        status: 'Sent',
+        createdAt: nowIso(),
+        createdBy: actorName(),
+      },
+      ...prev,
+    ]);
+    setCustomers((prev) =>
+      prev.map((c) =>
+        c.id === customer.id
+          ? {
+              ...c,
+              lastContact: 'Email · sent',
+              status: c.status === 'Payment Due' ? 'Follow-up' : c.status,
+              collectionStage: c.collectionStage === 'New Overdue' ? 'Contacted' : c.collectionStage,
+            }
+          : c,
+      ),
+    );
+    addActivity({
+      companyId: customer.companyId,
+      customerId: customer.id,
+      action: 'Message sent',
+      description: 'Email message sent via SMTP.',
+    });
+    toastSuccess('Email sent successfully.');
+    return { ok: true };
+  }
+
+  function logCall(input: {
+    customerId: string;
+    direction: CommDirection;
+    callResult: CallResult;
+    notes: string;
+    followUpRequired?: boolean;
+    followUpDate?: string;
+  }) {
+    const customer = customers.find((c) => c.id === input.customerId);
+    if (!customer) return;
+    setCommunications((prev) => [
+      {
+        id: uid('cm'),
+        companyId: customer.companyId,
+        customerId: customer.id,
+        channel: 'Phone',
+        direction: input.direction,
+        message: input.notes || input.callResult,
+        status: 'Logged',
+        createdAt: nowIso(),
+        createdBy: actorName(),
+        callResult: input.callResult,
+      },
+      ...prev,
+    ]);
+    let nextStatus = customer.status;
+    if (input.callResult === 'Promised payment') nextStatus = 'Promise to Pay';
+    if (input.callResult === 'No answer' || input.callResult === 'Requested callback') nextStatus = 'Follow-up';
+    if (input.callResult === 'Cancelled service') nextStatus = 'Cancelled';
+    setCustomers((prev) =>
+      prev.map((c) =>
+        c.id === customer.id
+          ? {
+              ...c,
+              status: nextStatus,
+              lastContact: `Call · ${input.callResult}`,
+              nextFollowUp: input.followUpRequired ? input.followUpDate || c.nextFollowUp : c.nextFollowUp,
+              collectionStage: input.callResult === 'No answer' ? 'Unresponsive' : 'Contacted',
+            }
+          : c,
+      ),
+    );
+    if (input.followUpRequired && input.followUpDate) {
+      setFollowUps((prev) => [
+        {
+          id: uid('fu'),
+          companyId: customer.companyId,
+          customerId: customer.id,
+          followUpDate: input.followUpDate!,
+          channel: 'Phone',
+          assignedUser: actorName(),
+          notes: input.notes,
+          createdAt: nowIso(),
+        },
+        ...prev,
+      ]);
+    }
+    addActivity({
+      companyId: customer.companyId,
+      customerId: customer.id,
+      action: 'Call logged',
+      description: `${input.direction} call logged — ${input.callResult}.`,
+    });
+    toastSuccess('Phone call logged.');
+  }
+
+  function addNote(input: { customerId: string; note: string; type: NoteType; pinned?: boolean }) {
+    const customer = customers.find((c) => c.id === input.customerId);
+    if (!customer) return;
+    setNotes((prev) => [
+      {
+        id: uid('n'),
+        companyId: customer.companyId,
+        customerId: customer.id,
+        note: input.note,
+        type: input.type,
+        pinned: !!input.pinned,
+        createdAt: nowIso(),
+        createdBy: actorName(),
+      },
+      ...prev,
+    ]);
+    setCommunications((prev) => [
+      {
+        id: uid('cm'),
+        companyId: customer.companyId,
+        customerId: customer.id,
+        channel: 'Internal note',
+        direction: 'Internal',
+        message: input.note,
+        status: 'Logged',
+        createdAt: nowIso(),
+        createdBy: actorName(),
+      },
+      ...prev,
+    ]);
+    addActivity({
+      companyId: customer.companyId,
+      customerId: customer.id,
+      action: 'Note added',
+      description: `${input.type} note added.`,
+    });
+    toastSuccess('Note added.');
+  }
+
+  function deleteNote(id: string) {
+    const note = notes.find((n) => n.id === id);
+    if (!note) return;
+    setNotes((prev) => prev.filter((n) => n.id !== id));
+    addActivity({
+      companyId: note.companyId,
+      customerId: note.customerId,
+      action: 'Note deleted',
+      description: 'Internal note removed.',
+    });
+    toastSuccess('Note deleted.');
+  }
+
+  function scheduleFollowUp(input: {
+    customerId: string;
+    followUpDate: string;
+    followUpTime?: string;
+    channel: CommChannel | 'Any';
+    assignedUser: string;
+    notes?: string;
+  }) {
+    const customer = customers.find((c) => c.id === input.customerId);
+    if (!customer) return;
+    setFollowUps((prev) => [
+      {
+        id: uid('fu'),
+        companyId: customer.companyId,
+        customerId: customer.id,
+        followUpDate: input.followUpDate,
+        followUpTime: input.followUpTime,
+        channel: input.channel,
+        assignedUser: input.assignedUser,
+        notes: input.notes,
+        createdAt: nowIso(),
+      },
+      ...prev,
+    ]);
+    setCustomers((prev) =>
+      prev.map((c) =>
+        c.id === customer.id
+          ? {
+              ...c,
+              nextFollowUp: input.followUpDate,
+              assignedCollector: input.assignedUser,
+              status: c.status === 'Payment Due' ? 'Follow-up' : c.status,
+              collectionStage: 'Follow-up Due',
+            }
+          : c,
+      ),
+    );
+    addActivity({
+      companyId: customer.companyId,
+      customerId: customer.id,
+      action: 'Follow-up scheduled',
+      description: `Follow-up scheduled for ${safeDate(input.followUpDate)}.`,
+    });
+    toastSuccess('Follow-up scheduled.');
+  }
+
+  function cancelService(input: {
+    customerId: string;
+    cancellationDate: string;
+    reason: string;
+    customerRequested: boolean;
+    recoveryRequired: boolean;
+    notes?: string;
+  }) {
+    const customer = customers.find((c) => c.id === input.customerId);
+    if (!customer) return;
+    setCustomers((prev) =>
+      prev.map((c) =>
+        c.id === customer.id
+          ? {
+              ...c,
+              status: input.recoveryRequired ? 'Recovery Required' : 'Cancelled',
+              collectionStage: input.recoveryRequired ? 'Recovery Required' : 'Service Cancelled',
+              cancelledAt: input.cancellationDate,
+              cancellationReason: input.reason,
+              lastContact: `Cancelled · ${safeDate(input.cancellationDate)}`,
+            }
+          : c,
+      ),
+    );
+    if (input.recoveryRequired) {
+      const eq = equipment.filter((e) => e.customerId === customer.id && e.ownership === 'Company owned');
+      setRecoveries((prev) => [
+        {
+          id: `REC-${String(282 + prev.length).padStart(5, '0')}`,
+          companyId: customer.companyId,
+          customerId: customer.id,
+          status: 'Awaiting assignment',
+          equipment: customer.equipment || eq.map((e) => e.model || e.type).join(' + ') || 'Company equipment',
+          equipmentIds: eq.map((e) => e.id),
+          technician: 'Unassigned',
+          reason: input.reason,
+          priority: 'High',
+          internalNotes: input.notes,
+          attempts: 0,
+        },
+        ...prev,
+      ]);
+      setEquipment((prev) =>
+        prev.map((e) =>
+          e.customerId === customer.id && e.ownership === 'Company owned'
+            ? { ...e, recoveryRequired: true, status: 'Awaiting recovery' }
+            : e,
+        ),
+      );
+    }
+    addActivity({
+      companyId: customer.companyId,
+      customerId: customer.id,
+      action: 'Service cancelled',
+      description: `Service cancelled (${input.reason})${input.recoveryRequired ? '. Recovery case created.' : '.'}`,
+    });
+    toastSuccess('Service cancellation recorded.');
+  }
+
+  function addEquipment(item: Omit<Equipment, 'id'> & { id?: string }) {
+    const created: Equipment = { ...item, id: item.id || uid('eq') };
+    setEquipment((prev) => [created, ...prev]);
+    setCustomers((prev) =>
+      prev.map((c) =>
+        c.id === created.customerId
+          ? {
+              ...c,
+              equipment: [c.equipment, created.model || created.type].filter(Boolean).join(' + '),
+            }
+          : c,
+      ),
+    );
+    addActivity({
+      companyId: created.companyId,
+      customerId: created.customerId,
+      action: 'Equipment added',
+      description: `${created.type}${created.model ? ` (${created.model})` : ''} added.`,
+    });
+    toastSuccess('Equipment added.');
+  }
+
+  function updateEquipment(item: Equipment) {
+    setEquipment((prev) => prev.map((e) => (e.id === item.id ? item : e)));
+    addActivity({
+      companyId: item.companyId,
+      customerId: item.customerId,
+      action: 'Equipment updated',
+      description: `${item.type} details updated.`,
+    });
+    toastSuccess('Equipment updated.');
+  }
+
+  function createRecoveryJob(input: {
+    customerId: string;
+    equipmentIds: string[];
+    reason: string;
+    priority: 'Low' | 'Medium' | 'High';
+    technician: string;
+    scheduledDate?: string;
+    contactInstructions?: string;
+    internalNotes?: string;
+  }) {
+    const customer = customers.find((c) => c.id === input.customerId);
+    if (!customer) return;
+    const selectedEq = equipment.filter((e) => input.equipmentIds.includes(e.id));
+    const job: RecoveryJob = {
+      id: `REC-${String(282 + recoveries.length).padStart(5, '0')}`,
+      companyId: customer.companyId,
+      customerId: customer.id,
+      status: input.scheduledDate ? 'Scheduled' : 'Awaiting assignment',
+      equipment: selectedEq.map((e) => e.model || e.type).join(' + ') || customer.equipment || 'Equipment',
+      equipmentIds: input.equipmentIds,
+      technician: input.technician || 'Unassigned',
+      scheduledDate: input.scheduledDate,
+      reason: input.reason,
+      priority: input.priority,
+      contactInstructions: input.contactInstructions,
+      internalNotes: input.internalNotes,
+      attempts: 0,
+    };
+    setRecoveries((prev) => [job, ...prev]);
+    setCustomers((prev) =>
+      prev.map((c) =>
+        c.id === customer.id ? { ...c, status: 'Recovery Required', collectionStage: 'Recovery Required' } : c,
+      ),
+    );
+    setEquipment((prev) =>
+      prev.map((e) =>
+        input.equipmentIds.includes(e.id) ? { ...e, recoveryRequired: true, status: 'Awaiting recovery' } : e,
+      ),
+    );
+    addActivity({
+      companyId: customer.companyId,
+      customerId: customer.id,
+      action: 'Recovery case created',
+      description: `Recovery job ${job.id} created.`,
+    });
+    toastSuccess('Recovery job created.');
+  }
+
+  function updateRecovery(job: RecoveryJob) {
+    setRecoveries((prev) => prev.map((r) => (r.id === job.id ? job : r)));
+  }
+
+  function completeRecovery(input: {
+    jobId: string;
+    outcome: string;
+    condition?: Equipment['condition'];
+    notes?: string;
+    rescheduleDate?: string;
+  }) {
+    const job = recoveries.find((r) => r.id === input.jobId);
+    if (!job) return;
+    let status: RecoveryStatus = 'Closed';
+    if (input.outcome === 'Recovered' || input.outcome === 'Partially recovered') status = 'Recovered';
+    else if (input.outcome === 'Customer unavailable') status = 'Customer Unavailable';
+    else if (input.outcome === 'Equipment not found') status = 'Not Found';
+    else if (input.outcome === 'Equipment damaged') status = 'Damaged';
+    else if (input.outcome === 'Reschedule required') status = 'Rescheduled';
+    else if (input.outcome === 'Written off') status = 'Written Off';
+
+    setRecoveries((prev) =>
+      prev.map((r) =>
+        r.id === job.id
+          ? {
+              ...r,
+              status,
+              outcome: input.outcome,
+              internalNotes: [r.internalNotes, input.notes].filter(Boolean).join(' | '),
+              completedDate: ['Recovered', 'Written Off', 'Not Found', 'Damaged', 'Closed'].includes(status)
+                ? todayIso()
+                : r.completedDate,
+              scheduledDate: input.rescheduleDate || r.scheduledDate,
+              attempts: (r.attempts || 0) + 1,
+            }
+          : r,
+      ),
+    );
+
+    if (job.equipmentIds?.length) {
+      setEquipment((prev) =>
+        prev.map((e) => {
+          if (!job.equipmentIds!.includes(e.id)) return e;
+          if (input.outcome === 'Recovered' || input.outcome === 'Partially recovered') {
+            return { ...e, status: 'Recovered', condition: input.condition || e.condition, recoveryRequired: false };
+          }
+          if (input.outcome === 'Equipment damaged') {
+            return { ...e, status: 'Damaged', condition: 'Damaged', recoveryRequired: false };
+          }
+          if (input.outcome === 'Written off') {
+            return { ...e, status: 'Written Off', recoveryRequired: false };
+          }
+          return e;
+        }),
+      );
+    }
+
+    addActivity({
+      companyId: job.companyId,
+      customerId: job.customerId,
+      action: 'Recovery updated',
+      description: `Recovery ${job.id} outcome: ${input.outcome}.`,
+    });
+    toastSuccess('Recovery outcome saved.');
+  }
+
+  async function handleFile(file: File) {
+    const buffer = await file.arrayBuffer();
+    const wb = XLSX.read(buffer, { type: 'array', cellDates: true });
+    const ws = wb.Sheets[wb.SheetNames[0]];
+    const rows = XLSX.utils.sheet_to_json<Record<string, unknown>>(ws, { defval: '' });
+    const headers = rows.length ? Object.keys(rows[0]) : [];
+    setImportRows(rows);
+    setImportFile(file.name);
+    setImportResult('');
+    setMapping({
+      accountNo: findColumn(headers, 'accountNo'),
+      name: findColumn(headers, 'name'),
+      phone: findColumn(headers, 'phone'),
+      email: findColumn(headers, 'email'),
+      outstanding: findColumn(headers, 'outstanding'),
+      dueDate: findColumn(headers, 'dueDate'),
+      address: findColumn(headers, 'address'),
+      equipment: findColumn(headers, 'equipment'),
+    });
+  }
+
+  function value(row: Record<string, unknown>, key: string) {
+    const col = mapping[key];
+    return col ? row[col] : '';
+  }
+  function dateValue(raw: unknown) {
+    if (raw instanceof Date && !isNaN(raw.getTime())) return raw.toISOString().slice(0, 10);
+    if (typeof raw === 'number') {
+      const d = XLSX.SSF.parse_date_code(raw);
+      if (d) return `${d.y}-${String(d.m).padStart(2, '0')}-${String(d.d).padStart(2, '0')}`;
+    }
+    const d = new Date(String(raw));
+    return isNaN(d.getTime()) ? todayIso() : d.toISOString().slice(0, 10);
+  }
+  function numberValue(raw: unknown) {
+    return Number(String(raw).replace(/[^0-9.-]/g, '')) || 0;
+  }
+
+  /** Stable account key so Excel formatting (spaces, dashes, trailing .0) still matches. */
+  function normalizeAccountKey(raw: unknown) {
+    if (raw == null || raw === '') return '';
+    if (typeof raw === 'number' && Number.isFinite(raw)) {
+      return String(Math.trunc(raw));
+    }
+    let s = String(raw).trim();
+    if (/^\d+\.0+$/.test(s)) s = s.replace(/\.0+$/, '');
+    // Scientific notation from Excel on long numeric accounts
+    if (/e/i.test(s) && !Number.isNaN(Number(s))) {
+      const n = Number(s);
+      if (Number.isFinite(n)) return String(Math.trunc(n));
+    }
+    return s.replace(/[\s\-_/]/g, '').toLowerCase();
+  }
+
+  function commitImport() {
+    if (!mapping.accountNo || !mapping.name || !mapping.outstanding) {
+      setImportResult('Please map Account Number, Client Name and Outstanding Amount before importing.');
+      toastError('Please map required columns before importing.');
+      return;
+    }
+    if (!companyId) {
+      toastError('Select or add a company before importing.');
+      return;
+    }
+
+    let created = 0;
+    let updated = 0;
+    let errors = 0;
+    const seen = new Set<string>();
+    let next = [...customers];
+    const batchId = `IMP-${105 + imports.length}`;
+    const activityBuffer: Activity[] = [];
+
+    // Last row wins when the same account appears more than once in the file
+    const dedupedRows: Record<string, unknown>[] = [];
+    const rowByAccount = new Map<string, Record<string, unknown>>();
+    for (const row of importRows) {
+      const key = normalizeAccountKey(value(row, 'accountNo'));
+      const name = String(value(row, 'name')).trim();
+      if (!key || !name) {
+        errors++;
+        continue;
+      }
+      rowByAccount.set(key, row);
+    }
+    for (const row of rowByAccount.values()) dedupedRows.push(row);
+
+    for (const row of dedupedRows) {
+      const accountRaw = value(row, 'accountNo');
+      const accountKey = normalizeAccountKey(accountRaw);
+      const account = String(accountRaw).trim();
+      const name = String(value(row, 'name')).trim();
+      if (!accountKey || !name) {
+        errors++;
+        continue;
+      }
+      seen.add(accountKey);
+
+      const amount = numberValue(value(row, 'outstanding'));
+      // Prefer an active match; fall back to archived so we update instead of duplicating
+      let ix = next.findIndex(
+        (c) =>
+          c.companyId === companyId &&
+          !c.archived &&
+          normalizeAccountKey(c.accountNo) === accountKey,
+      );
+      if (ix < 0) {
+        ix = next.findIndex(
+          (c) => c.companyId === companyId && normalizeAccountKey(c.accountNo) === accountKey,
+        );
+      }
+
+      if (ix >= 0) {
+        const prev = next[ix];
+        const prevAmount = prev.outstanding;
+        next[ix] = {
+          ...prev,
+          outstanding: amount,
+          archived: false,
+          status: amount === 0 ? 'Paid' : prev.status === 'Paid' && amount > 0 ? 'Payment Due' : prev.status,
+          collectionStage: amount === 0 ? 'Paid' : prev.collectionStage,
+        };
+        updated++;
+        if (prevAmount !== amount) {
+          activityBuffer.push({
+            id: uid('act'),
+            companyId,
+            customerId: prev.id,
+            user: actorName(),
+            action: 'Imported from Excel',
+            description: `Balance updated by Excel Import #${batchId} from ${money(prevAmount)} to ${money(amount)}.`,
+            createdAt: nowIso(),
+          });
+        }
+      } else {
+        const newId = uid('c');
+        next.unshift({
+          id: newId,
+          companyId,
+          accountNo: account,
+          name,
+          phone: String(value(row, 'phone') || ''),
+          email: String(value(row, 'email') || ''),
+          outstanding: amount,
+          originalOutstanding: amount,
+          dueDate: value(row, 'dueDate') ? dateValue(value(row, 'dueDate')) : todayIso(),
+          status: amount > 0 ? 'Payment Due' : 'Paid',
+          collectionStage: amount > 0 ? 'New Overdue' : 'Closed',
+          lastContact: 'Not contacted',
+          address: String(value(row, 'address') || ''),
+          equipment: String(value(row, 'equipment') || ''),
+          assignedCollector: actorName(),
+        });
+        created++;
+        activityBuffer.push({
+          id: uid('act'),
+          companyId,
+          customerId: newId,
+          user: actorName(),
+          action: 'Imported from Excel',
+          description: `Customer created by Excel Import #${batchId}.`,
+          createdAt: nowIso(),
+        });
+      }
+    }
+
+    const cleared = customers.filter(
+      (c) =>
+        c.companyId === companyId &&
+        !c.archived &&
+        c.outstanding > 0 &&
+        !seen.has(normalizeAccountKey(c.accountNo)),
+    ).length;
+    setCustomers(next);
+    setImports((prev) => [
+      {
+        id: batchId,
+        companyId,
+        file: importFile,
+        date: nowIso(),
+        rows: importRows.length,
+        created,
+        updated,
+        cleared,
+        errors,
+        uploadedBy: actorName(),
+      },
+      ...prev,
+    ]);
+    if (activityBuffer.length) setActivities((prev) => [...activityBuffer, ...prev]);
+    setImportResult(
+      `Imported into ${company.name}: ${created} new, ${updated} balances updated, ${cleared} not in this file, ${errors} skipped.`,
+    );
+    toastSuccess(
+      updated && !created
+        ? `Updated ${updated} existing account balance${updated === 1 ? '' : 's'}.`
+        : 'Import completed successfully.',
+    );
+  }
+
+  const valueCtx: AppContextValue = {
+    companies,
+    companyId,
+    company,
+    showArchivedCompanies,
+    setShowArchivedCompanies,
+    switchCompany,
+    activeCompanies,
+    customers,
+    companyCustomers,
+    recoveries,
+    companyRecoveries,
+    imports,
+    companyImports,
+    templates,
+    companyTemplates,
+    setTemplates,
+    saveTemplate: (t) => {
+      setTemplates((prev) => (prev.some((x) => x.id === t.id) ? prev.map((x) => (x.id === t.id ? t : x)) : [t, ...prev]));
+      toastSuccess('Template saved.');
+    },
+    equipment,
+    promises,
+    payments,
+    communications,
+    notes,
+    followUps,
+    activities,
+    search,
+    setSearch,
+    statusFilter,
+    setStatusFilter,
+    filteredCustomers,
+    outstandingCustomers,
+    totalOutstanding,
+    promiseCustomers,
+    recoveryNeeded,
+    loading,
+    addCompany,
+    updateCompany,
+    archiveCompany,
+    addCustomer,
+    updateCustomer,
+    archiveCustomer,
+    updateStatus,
+    recordPayment,
+    createPromise,
+    updatePromiseStatus,
+    sendMessage,
+    logCall,
+    addNote,
+    deleteNote,
+    scheduleFollowUp,
+    cancelService,
+    addEquipment,
+    updateEquipment,
+    createRecoveryJob,
+    updateRecovery,
+    completeRecovery,
+    importRows,
+    importFile,
+    mapping,
+    setMapping,
+    importResult,
+    handleFile,
+    commitImport,
+    getCustomer: (id) => customers.find((c) => c.id === id),
+    getCompany: (id) => companies.find((c) => c.id === id),
+    companyEquipment: (customerId) =>
+      equipment.filter((e) => e.companyId === companyId && (!customerId || e.customerId === customerId)),
+    companyPromises: (customerId) =>
+      promises.filter((p) => p.companyId === companyId && (!customerId || p.customerId === customerId)),
+    companyPayments: (customerId) =>
+      payments.filter((p) => p.companyId === companyId && (!customerId || p.customerId === customerId)),
+    companyCommunications: (customerId) =>
+      communications.filter((c) => c.companyId === companyId && (!customerId || c.customerId === customerId)),
+    companyNotes: (customerId) =>
+      notes.filter((n) => n.companyId === companyId && (!customerId || n.customerId === customerId)),
+    companyFollowUps: (customerId) =>
+      followUps.filter((f) => f.companyId === companyId && (!customerId || f.customerId === customerId)),
+    companyActivities: (customerId) =>
+      activities.filter((a) => a.companyId === companyId && (!customerId || a.customerId === customerId)),
+    toastSuccess,
+    toastError,
+    addActivity,
+  };
+
+  return <AppContext.Provider value={valueCtx}>{children}</AppContext.Provider>;
+}
+
+export function useApp() {
+  const ctx = useContext(AppContext);
+  if (!ctx) throw new Error('useApp must be used within AppProvider');
+  return ctx;
+}
+
+export { fillTemplate };
