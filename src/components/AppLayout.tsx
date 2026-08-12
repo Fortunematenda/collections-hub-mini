@@ -32,7 +32,8 @@ const navItems: { key: NavKey; label: string; icon: typeof Home; group?: string;
   { key: 'imports', label: 'Excel Imports', icon: FileSpreadsheet, path: '/imports' },
   { key: 'templates', label: 'Message Templates', icon: Mail, path: '/templates' },
   { key: 'communications', label: 'Communication Centre', icon: MessagesSquare, path: '/communications' },
-  { key: 'roles', label: 'Roles & Permissions', icon: Shield, group: 'System', path: '/roles', permission: 'roles.manage' },
+  { key: 'users', label: 'Users', icon: Users, group: 'System', path: '/users', permission: 'users.manage' },
+  { key: 'roles', label: 'Roles & Permissions', icon: Shield, path: '/roles', permission: 'roles.manage' },
   { key: 'settings', label: 'Company Settings', icon: Settings, path: '/settings' },
 ];
 

@@ -8,6 +8,7 @@ export type NavKey =
   | 'imports'
   | 'templates'
   | 'communications'
+  | 'users'
   | 'roles'
   | 'settings';
 

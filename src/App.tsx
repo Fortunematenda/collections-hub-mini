@@ -17,6 +17,7 @@ import Recovery from './pages/Recovery';
 import Settings from './pages/Settings';
 import Templates from './pages/Templates';
 import RolesPermissions from './pages/RolesPermissions';
+import UsersPage from './pages/Users';
 
 export default function App() {
   return (
@@ -43,6 +44,7 @@ export default function App() {
               <Route path="imports" element={<Imports />} />
               <Route path="templates" element={<Templates />} />
               <Route path="communications" element={<Communications />} />
+              <Route path="users" element={<UsersPage />} />
               <Route path="roles" element={<RolesPermissions />} />
               <Route path="settings" element={<Settings />} />
               <Route path="*" element={<Navigate to="/" replace />} />

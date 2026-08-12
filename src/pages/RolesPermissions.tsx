@@ -236,6 +236,11 @@ export default function RolesPermissions() {
         description="Define what each team role can do across collections, communications, imports and administration."
         actions={
           <Group gap="xs">
+            {(canManageUsers || currentUser?.role === 'admin') && (
+              <Button leftSection={<UserPlus size={14} />} onClick={() => setUserModalOpen(true)}>
+                Add user
+              </Button>
+            )}
             <Button variant="light" leftSection={<Plus size={14} />} onClick={() => setPermModalOpen(true)}>
               Add permission
             </Button>

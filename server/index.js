@@ -389,7 +389,7 @@ app.post('/api/permissions', authRequired, requirePermission('roles.manage'), (r
   return res.status(201).json({ ok: true, permission: created });
 });
 
-app.get('/api/roles', authRequired, requirePermission('roles.manage'), (_req, res) => {
+app.get('/api/roles', authRequired, requirePermission('roles.manage', 'users.manage'), (_req, res) => {
   const enriched = roles.map((role) => ({
     ...role,
     permissions: permissionsForRole(role).map((p) => ({ id: p.id, key: p.key, label: p.label, group: p.group })),
@@ -467,7 +467,7 @@ app.get('/api/users', authRequired, requirePermission('users.manage', 'roles.man
   });
 });
 
-app.post('/api/users', authRequired, requirePermission('users.manage'), async (req, res) => {
+app.post('/api/users', authRequired, requirePermission('users.manage', 'roles.manage'), async (req, res) => {
   try {
     const email = String(req.body?.email || '')
       .trim()
