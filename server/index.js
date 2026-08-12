@@ -7,8 +7,16 @@ import nodemailer from 'nodemailer';
 import twilio from 'twilio';
 import { randomUUID } from 'crypto';
 import path from 'path';
-import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'fs';
+import { existsSync } from 'fs';
 import { fileURLToPath } from 'url';
+import {
+  initDb,
+  isUsingDatabase,
+  loadAuthTables,
+  readAppStore,
+  saveAuthTables,
+  writeAppStore,
+} from './db.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const PORT = Number(process.env.MAILER_PORT || process.env.PORT || 8787);
@@ -258,43 +266,12 @@ app.use(
 app.use(express.json({ limit: '10mb' }));
 app.get('/favicon.ico', (_req, res) => res.status(204).end());
 
-const DATA_DIR = path.resolve(__dirname, 'data');
-const DATA_FILE = path.join(DATA_DIR, 'app-store.json');
-
-function emptyAppStore() {
-  return {
-    companies: [],
-    companyId: '',
-    customers: [],
-    recoveries: [],
-    imports: [],
-    templates: [],
-    equipment: [],
-    promises: [],
-    payments: [],
-    communications: [],
-    notes: [],
-    followUps: [],
-    activities: [],
-  };
-}
-
-function readAppStore() {
+async function persistAuth() {
   try {
-    if (!existsSync(DATA_FILE)) return emptyAppStore();
-    const parsed = JSON.parse(readFileSync(DATA_FILE, 'utf8'));
-    return { ...emptyAppStore(), ...(parsed && typeof parsed === 'object' ? parsed : {}) };
+    await saveAuthTables({ permissions, roles, users });
   } catch (error) {
-    console.error('[data] read failed:', error instanceof Error ? error.message : error);
-    return emptyAppStore();
+    console.error('[db] auth persist failed:', error instanceof Error ? error.message : error);
   }
-}
-
-function writeAppStore(payload) {
-  if (!existsSync(DATA_DIR)) mkdirSync(DATA_DIR, { recursive: true });
-  const next = { ...emptyAppStore(), ...payload };
-  writeFileSync(DATA_FILE, JSON.stringify(next, null, 2), 'utf8');
-  return next;
 }
 
 app.get('/api/health', (_req, res) => {
@@ -308,26 +285,27 @@ app.get('/api/health', (_req, res) => {
     host: smtp.host || null,
     from: smtp.from || null,
     twilioFrom: twilioConfigured() ? twilioConfig.from : null,
-    dataStore: existsSync(DATA_FILE) ? 'ready' : 'empty',
+    database: isUsingDatabase() ? 'postgres' : 'file-fallback',
   });
 });
 
-app.get('/api/data', authRequired, (_req, res) => {
+app.get('/api/data', authRequired, async (_req, res) => {
   try {
-    return res.json({ ok: true, data: readAppStore() });
+    const data = await readAppStore();
+    return res.json({ ok: true, data });
   } catch (error) {
     const message = error instanceof Error ? error.message : 'Unable to load app data.';
     return res.status(500).json({ ok: false, error: message });
   }
 });
 
-app.put('/api/data', authRequired, (req, res) => {
+app.put('/api/data', authRequired, async (req, res) => {
   try {
     const body = req.body && typeof req.body === 'object' ? req.body : {};
     if (!Array.isArray(body.companies)) {
       return res.status(400).json({ ok: false, error: 'Invalid payload: companies must be an array.' });
     }
-    const saved = writeAppStore({
+    const saved = await writeAppStore({
       companies: body.companies || [],
       companyId: String(body.companyId || ''),
       customers: Array.isArray(body.customers) ? body.customers : [],
@@ -407,6 +385,7 @@ app.post('/api/permissions', authRequired, requirePermission('roles.manage'), (r
     system: false,
   };
   permissions = [...permissions, created];
+  void persistAuth();
   return res.status(201).json({ ok: true, permission: created });
 });
 
@@ -437,6 +416,7 @@ app.post('/api/roles', authRequired, requirePermission('roles.manage'), (req, re
     system: false,
   };
   roles = [created, ...roles];
+  void persistAuth();
   return res.status(201).json({
     ok: true,
     role: { ...created, permissions: permissionsForRole(created) },
@@ -461,6 +441,7 @@ app.put('/api/roles/:id', authRequired, requirePermission('roles.manage'), (req,
 
   const updated = { ...role, name, description, permissionIds: nextIds };
   roles = roles.map((r) => (r.id === role.id ? updated : r));
+  void persistAuth();
   return res.json({ ok: true, role: { ...updated, permissions: permissionsForRole(updated) } });
 });
 
@@ -472,6 +453,7 @@ app.delete('/api/roles/:id', authRequired, requirePermission('roles.manage'), (r
     return res.status(400).json({ ok: false, error: 'Reassign users before deleting this role.' });
   }
   roles = roles.filter((r) => r.id !== role.id);
+  void persistAuth();
   return res.json({ ok: true });
 });
 
@@ -509,6 +491,7 @@ app.post('/api/users', authRequired, requirePermission('users.manage'), async (r
       active: true,
     };
     users = [created, ...users];
+    void persistAuth();
     return res.status(201).json({ ok: true, user: publicUser(created) });
   } catch (error) {
     const message = error instanceof Error ? error.message : 'Unable to create user.';
@@ -523,6 +506,7 @@ app.put('/api/users/:id/role', authRequired, requirePermission('users.manage', '
   if (!getRole(roleId)) return res.status(400).json({ ok: false, error: 'Selected role was not found.' });
   user.roleId = roleId;
   users = users.map((u) => (u.id === user.id ? user : u));
+  void persistAuth();
   return res.json({ ok: true, user: publicUser(user) });
 });
 
@@ -646,41 +630,65 @@ if (existsSync(distDir)) {
   console.log(`[web] serving static UI from ${distDir}`);
 }
 
-const server = app.listen(PORT);
+async function start() {
+  try {
+    await initDb();
+    const authFromDb = await loadAuthTables();
+    if (authFromDb?.permissions?.length && authFromDb?.roles?.length && authFromDb?.users?.length) {
+      permissions = authFromDb.permissions;
+      roles = authFromDb.roles;
+      users = authFromDb.users;
+      console.log('[db] loaded users/roles/permissions from PostgreSQL');
+    } else if (isUsingDatabase()) {
+      await saveAuthTables({ permissions, roles, users });
+      console.log('[db] seeded users/roles/permissions into PostgreSQL');
+    }
+  } catch (error) {
+    console.error('[db] startup failed:', error instanceof Error ? error.message : error);
+    if (process.env.DATABASE_URL) {
+      process.exit(1);
+    }
+  }
 
-server.on('error', (error) => {
-  if (error?.code === 'EADDRINUSE') {
-    console.error(`[server] port ${PORT} is already in use. Stop the other process or change MAILER_PORT in .env.`);
+  const server = app.listen(PORT);
+
+  server.on('error', (error) => {
+    if (error?.code === 'EADDRINUSE') {
+      console.error(`[server] port ${PORT} is already in use. Stop the other process or change MAILER_PORT in .env.`);
+      process.exit(1);
+    }
+    console.error('[server] failed to start:', error);
     process.exit(1);
-  }
-  console.error('[server] failed to start:', error);
-  process.exit(1);
-});
+  });
 
-server.on('listening', () => {
-  console.log(`[server] listening on http://localhost:${PORT}`);
-  console.log(`[auth] admin login → ${adminEmail}`);
-  console.log(`[rbac] ${roles.length} roles · ${permissions.length} permissions`);
-  if (twilioConfigured()) {
-    console.log(`[whatsapp] Twilio ready · from ${twilioConfig.from}`);
-  } else {
-    console.log('[whatsapp] Twilio NOT configured — set TWILIO_ACCOUNT_SID, TWILIO_AUTH_TOKEN, TWILIO_WHATSAPP_FROM in .env');
-  }
-  if (!smtpConfigured()) {
-    console.log('[mailer] smtp NOT configured — set SMTP_* in .env');
-    return;
-  }
-  console.log(`[mailer] smtp target ${smtp.host}:${smtp.port} as ${smtp.from}`);
-  createTransport()
-    .verify()
-    .then(() => console.log('[mailer] smtp credentials verified'))
-    .catch((error) => {
-      const message = error instanceof Error ? error.message : String(error);
-      console.error('[mailer] smtp verify failed:', message);
-    });
-});
+  server.on('listening', () => {
+    console.log(`[server] listening on http://localhost:${PORT}`);
+    console.log(`[auth] admin login → ${adminEmail}`);
+    console.log(`[rbac] ${roles.length} roles · ${permissions.length} permissions`);
+    console.log(`[db] mode → ${isUsingDatabase() ? 'PostgreSQL' : 'JSON file fallback'}`);
+    if (twilioConfigured()) {
+      console.log(`[whatsapp] Twilio ready · from ${twilioConfig.from}`);
+    } else {
+      console.log('[whatsapp] Twilio NOT configured — set TWILIO_ACCOUNT_SID, TWILIO_AUTH_TOKEN, TWILIO_WHATSAPP_FROM in .env');
+    }
+    if (!smtpConfigured()) {
+      console.log('[mailer] smtp NOT configured — set SMTP_* in .env');
+      return;
+    }
+    console.log(`[mailer] smtp target ${smtp.host}:${smtp.port} as ${smtp.from}`);
+    createTransport()
+      .verify()
+      .then(() => console.log('[mailer] smtp credentials verified'))
+      .catch((error) => {
+        const message = error instanceof Error ? error.message : String(error);
+        console.error('[mailer] smtp verify failed:', message);
+      });
+  });
 
-server.ref();
+  server.ref();
+}
+
+start();
 
 process.on('uncaughtException', (error) => {
   console.error('[server] uncaughtException:', error);
