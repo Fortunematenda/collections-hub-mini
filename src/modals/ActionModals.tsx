@@ -169,7 +169,7 @@ export function ScheduleFollowUpModal({
   const { scheduleFollowUp } = useApp();
   const [followUpDate, setFollowUpDate] = useState(todayIso());
   const [followUpTime, setFollowUpTime] = useState('09:00');
-  const [channel, setChannel] = useState<CommChannel | 'Any'>('WhatsApp');
+  const [channel, setChannel] = useState<CommChannel | 'Any'>('Email');
   const [assignedUser, setAssignedUser] = useState('');
   const [notes, setNotes] = useState('');
   const [saving, setSaving] = useState(false);
@@ -178,7 +178,7 @@ export function ScheduleFollowUpModal({
     if (opened && customer) {
       setFollowUpDate(customer.nextFollowUp || todayIso());
       setFollowUpTime('09:00');
-      setChannel('WhatsApp');
+      setChannel('Email');
       setAssignedUser(customer.assignedCollector || actorName());
       setNotes('');
     }
@@ -195,7 +195,7 @@ export function ScheduleFollowUpModal({
         </SimpleGrid>
         <Select
           label="Channel"
-          data={['WhatsApp', 'Email', 'Phone', 'Any']}
+          data={['Email', 'Phone', 'WhatsApp', 'Any']}
           value={channel}
           onChange={(v) => setChannel((v || 'Any') as CommChannel | 'Any')}
         />

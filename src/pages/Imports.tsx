@@ -1,4 +1,4 @@
-import { useRef } from 'react';
+import { useRef, useState } from 'react';
 import { Badge, Button, Card, Select, Stack, Table, Text } from '@mantine/core';
 import { format, parseISO } from 'date-fns';
 import {
@@ -7,20 +7,61 @@ import {
   Import,
   RefreshCw,
   ShieldCheck,
+  Trash2,
   UploadCloud,
 } from 'lucide-react';
+import { ConfirmModal, MoreActionsMenu } from '../components/CustomerTable';
 import { EmptyState, PageHero, Rule } from '../components/ui';
 import { useApp } from '../context/AppContext';
+import { useAuth } from '../context/AuthContext';
+import type { ImportBatch } from '../types';
 
-const mappingFields: [string, string][] = [
-  ['accountNo', 'Account Number *'],
-  ['name', 'Client Name *'],
-  ['outstanding', 'Outstanding Amount *'],
-  ['phone', 'Phone'],
-  ['email', 'Email'],
-  ['dueDate', 'Due Date'],
-  ['address', 'Installation Address'],
-  ['equipment', 'Equipment'],
+const mappingSections: { title: string; fields: [string, string][] }[] = [
+  {
+    title: 'Account Summary',
+    fields: [
+      ['accountNo', 'Account number *'],
+      ['name', 'Client name *'],
+      ['customerReference', 'Customer reference'],
+      ['servicePackage', 'Service / package'],
+      ['monthlySubscription', 'Monthly subscription'],
+      ['originalOutstanding', 'Original outstanding'],
+      ['outstanding', 'Current outstanding *'],
+      ['dueDate', 'Due date'],
+      ['collectionStage', 'Collection status'],
+    ],
+  },
+  {
+    title: 'Contact Information',
+    fields: [
+      ['phone', 'Phone'],
+      ['whatsapp', 'WhatsApp'],
+      ['email', 'Email'],
+      ['preferredContact', 'Preferred contact'],
+      ['language', 'Language'],
+    ],
+  },
+  {
+    title: 'Installation Address',
+    fields: [
+      ['address', 'Installation address'],
+      ['suburb', 'Suburb'],
+      ['city', 'City'],
+      ['province', 'Province'],
+      ['postalCode', 'Postal code'],
+    ],
+  },
+  {
+    title: 'Next Action',
+    fields: [
+      ['nextFollowUp', 'Next follow-up'],
+      ['assignedCollector', 'Assigned collector'],
+    ],
+  },
+  {
+    title: 'Equipment Summary',
+    fields: [['equipment', 'Equipment']],
+  },
 ];
 
 export default function Imports() {
@@ -35,9 +76,27 @@ export default function Imports() {
     importResult,
     companyImports,
     handleFile,
+    deleteImport,
   } = useApp();
+  const { user } = useAuth();
+  const isAdmin = user?.role === 'admin';
+  const [pendingDelete, setPendingDelete] = useState<ImportBatch | null>(null);
 
   const headers = importRows.length ? Object.keys(importRows[0]) : [];
+
+  const importActions = (batch: ImportBatch) =>
+    isAdmin ? (
+      <MoreActionsMenu
+        items={[
+          {
+            label: 'Delete file',
+            color: 'red',
+            icon: <Trash2 size={14} />,
+            onClick: () => setPendingDelete(batch),
+          },
+        ]}
+      />
+    ) : null;
 
   return (
     <>
@@ -81,26 +140,31 @@ export default function Imports() {
 
           {importRows.length > 0 && (
             <>
-              <div className="mapping-grid">
-                {mappingFields.map(([key, label]) => (
-                  <div className="mapping-item" key={key}>
-                    <div className="mapping-key">{label}</div>
-                    <Select
-                      mt={5}
-                      size="xs"
-                      searchable
-                      clearable
-                      placeholder="Select column"
-                      data={headers}
-                      value={mapping[key] || null}
-                      onChange={(v) => setMapping((m) => ({ ...m, [key]: v || '' }))}
-                    />
+              {mappingSections.map((section) => (
+                <div key={section.title} className="mapping-section">
+                  <div className="mapping-section-title">{section.title}</div>
+                  <div className="mapping-grid">
+                    {section.fields.map(([key, label]) => (
+                      <div className="mapping-item" key={key}>
+                        <div className="mapping-key">{label}</div>
+                        <Select
+                          mt={5}
+                          size="xs"
+                          searchable
+                          clearable
+                          placeholder="Select column"
+                          data={headers}
+                          value={mapping[key] || null}
+                          onChange={(v) => setMapping((m) => ({ ...m, [key]: v || '' }))}
+                        />
+                      </div>
+                    ))}
                   </div>
-                ))}
-              </div>
+                </div>
+              ))}
               <div className="import-commit">
                 <Text size="xs" c="dimmed">
-                  Required: Account Number, Client Name, Outstanding Amount
+                  Required: Account number, Client name, Current outstanding. Days overdue is calculated from due date.
                 </Text>
                 <Button leftSection={<Import size={14} />} onClick={commitImport}>
                   Import {importRows.length} rows
@@ -120,7 +184,7 @@ export default function Imports() {
           <Stack gap="md" mt="lg">
             <Rule icon={Building2} title="Scoped to one company" text={`This batch can update only ${company.name}.`} />
             <Rule icon={ShieldCheck} title="No duplicate customers" text="Matching account numbers update the existing customer — never create a second row." />
-            <Rule icon={RefreshCw} title="Balances only on match" text="For known accounts, only the outstanding amount is refreshed from the file." />
+            <Rule icon={RefreshCw} title="Mapped fields refresh on match" text="For known accounts, mapped columns such as balance, contact, address and status are refreshed from the file." />
             <Rule
               icon={CheckCircle2}
               title="Missing accounts are reviewed"
@@ -149,6 +213,7 @@ export default function Imports() {
                 <Table.Th>Updated</Table.Th>
                 <Table.Th>Not present</Table.Th>
                 <Table.Th>Errors</Table.Th>
+                {isAdmin && <Table.Th />}
               </Table.Tr>
             </Table.Thead>
             <Table.Tbody>
@@ -176,6 +241,7 @@ export default function Imports() {
                       {i.errors}
                     </Badge>
                   </Table.Td>
+                  {isAdmin && <Table.Td>{importActions(i)}</Table.Td>}
                 </Table.Tr>
               ))}
             </Table.Tbody>
@@ -194,6 +260,7 @@ export default function Imports() {
                 <span>{i.created} new</span>
                 <span>{i.updated} updated</span>
                 <span>{i.errors} errors</span>
+                {importActions(i)}
               </div>
             </div>
           ))}
@@ -203,6 +270,18 @@ export default function Imports() {
           <EmptyState title="No imports for this company yet" description="Upload an outstanding file to create the first batch." />
         )}
       </Card>
+
+      <ConfirmModal
+        opened={!!pendingDelete}
+        onClose={() => setPendingDelete(null)}
+        title="Delete imported file"
+        message={`Remove ${pendingDelete?.file || 'this import'} from history? Customer accounts created or updated by this file will stay in place.`}
+        confirmLabel="Delete file"
+        onConfirm={() => {
+          if (pendingDelete) deleteImport(pendingDelete.id);
+          setPendingDelete(null);
+        }}
+      />
     </>
   );
 }

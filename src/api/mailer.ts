@@ -8,6 +8,8 @@ export type SendMailPayload = {
   html?: string;
   customerName?: string;
   accountNo?: string;
+  inReplyTo?: string;
+  references?: string;
 };
 
 export type SendMailResult =
@@ -49,12 +51,66 @@ export async function sendMailViaApi(payload: SendMailPayload): Promise<SendMail
   }
 }
 
-export async function mailerHealth(): Promise<{ ok: boolean; mailer?: string }> {
+export async function mailerHealth(): Promise<{ ok: boolean; mailer?: string; imap?: string }> {
   try {
     const res = await fetch(apiUrl('/api/health'));
     if (!res.ok) return { ok: false };
-    return (await res.json()) as { ok: boolean; mailer?: string };
+    return (await res.json()) as { ok: boolean; mailer?: string; imap?: string };
   } catch {
     return { ok: false };
+  }
+}
+
+export type InboxSyncResult =
+  | {
+      ok: true;
+      imported: number;
+      unmatched?: number;
+      reassigned?: number;
+      busy?: boolean;
+      communications?: Array<{
+        id: string;
+        companyId: string;
+        customerId: string;
+        channel: 'Email';
+        direction: 'Incoming';
+        subject?: string;
+        message: string;
+        status: string;
+        createdAt: string;
+        createdBy: string;
+        externalId?: string;
+        messageId?: string;
+        readAt?: string;
+        handledAs?: 'promise' | 'none' | 'skipped';
+      }>;
+      activities?: Array<{
+        id: string;
+        companyId: string;
+        customerId: string;
+        user: string;
+        action: string;
+        description: string;
+        createdAt: string;
+      }>;
+      customers?: Array<{ id: string; lastContact?: string; collectionStage?: string }>;
+    }
+  | { ok: false; error: string };
+
+export async function syncInboxViaApi(): Promise<InboxSyncResult> {
+  try {
+    const token = getStoredToken();
+    if (!token) return { ok: false, error: 'Please sign in again to check the inbox.' };
+    const res = await fetch(apiUrl('/api/mail/inbox/sync'), {
+      method: 'POST',
+      headers: { Authorization: `Bearer ${token}` },
+    });
+    const data = (await res.json().catch(() => ({}))) as InboxSyncResult & { error?: string };
+    if (!res.ok || !data.ok) {
+      return { ok: false, error: data.error || `Inbox sync failed (${res.status})` };
+    }
+    return data;
+  } catch {
+    return { ok: false, error: 'API server is unreachable. Start it with npm run dev.' };
   }
 }

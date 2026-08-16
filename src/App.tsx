@@ -18,6 +18,8 @@ import Settings from './pages/Settings';
 import Templates from './pages/Templates';
 import RolesPermissions from './pages/RolesPermissions';
 import UsersPage from './pages/Users';
+import Integrations from './pages/Integrations';
+import Automations from './pages/Automations';
 
 export default function App() {
   return (
@@ -40,13 +42,31 @@ export default function App() {
               <Route path="accounts" element={<Accounts />} />
               <Route path="followups" element={<Followups />} />
               <Route path="promises" element={<Promises />} />
-              <Route path="recovery" element={<Recovery />} />
-              <Route path="imports" element={<Imports />} />
-              <Route path="templates" element={<Templates />} />
+              <Route element={<ProtectedRoute permission="recovery.manage" />}>
+                <Route path="recovery" element={<Recovery />} />
+              </Route>
+              <Route element={<ProtectedRoute permission="imports.manage" />}>
+                <Route path="imports" element={<Imports />} />
+              </Route>
+              <Route element={<ProtectedRoute permission="templates.manage" />}>
+                <Route path="templates" element={<Templates />} />
+              </Route>
               <Route path="communications" element={<Communications />} />
-              <Route path="users" element={<UsersPage />} />
-              <Route path="roles" element={<RolesPermissions />} />
-              <Route path="settings" element={<Settings />} />
+              <Route element={<ProtectedRoute permission="settings.manage" />}>
+                <Route path="integrations" element={<Integrations />} />
+              </Route>
+              <Route element={<ProtectedRoute permission="collections.manage" />}>
+                <Route path="automations" element={<Automations />} />
+              </Route>
+              <Route element={<ProtectedRoute permission="users.manage" />}>
+                <Route path="users" element={<UsersPage />} />
+              </Route>
+              <Route element={<ProtectedRoute permission="roles.manage" />}>
+                <Route path="roles" element={<RolesPermissions />} />
+              </Route>
+              <Route element={<ProtectedRoute permission="settings.manage" />}>
+                <Route path="settings" element={<Settings />} />
+              </Route>
               <Route path="*" element={<Navigate to="/" replace />} />
             </Route>
           </Route>

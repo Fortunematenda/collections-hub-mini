@@ -1,6 +1,6 @@
 import React, { createContext, useCallback, useContext, useEffect, useMemo, useRef, useState } from 'react';
 import * as XLSX from 'xlsx';
-import { notifications } from '@mantine/notifications';
+import { notifyError, notifySuccess, notifyWarning } from '../lib/notify';
 import {
   initialActivities,
   initialCommunications,
@@ -18,6 +18,7 @@ import {
 import type {
   AccountStatus,
   Activity,
+  CollectionStage,
   CallResult,
   CommChannel,
   CommDirection,
@@ -28,6 +29,7 @@ import type {
   FollowUp,
   ImportBatch,
   MessageTemplate,
+  PreferredContact,
   Note,
   NoteType,
   Payment,
@@ -35,20 +37,32 @@ import type {
   PromiseStatus,
   RecoveryJob,
   RecoveryStatus,
+  Integration,
+  AutomationRule,
 } from '../types';
 import {
   actorName,
-  findColumn,
+  compareAccountNo,
+  collectionEmailSubject,
   fillTemplate,
+  findColumn,
+  isPaidOrZeroBalance,
   money,
+  normalize,
   nowIso,
+  parsePromiseFromReply,
+  parseSignedAmount,
   safeDate,
+  splitEmailThread,
   todayIso,
   uid,
 } from '../utils';
 import { getStoredToken } from '../api/auth';
 import { fetchAppData, saveAppData } from '../api/data';
-import { sendMailViaApi } from '../api/mailer';
+import { useAuth } from './AuthContext';
+import { normalizeAccountKey } from '../../shared/account-key.js';
+import { sendMailViaApi, syncInboxViaApi } from '../api/mailer';
+import { defaultEmailTemplates, isLegacyCollectionBody } from '../data/emailTemplates';
 import { sendWhatsAppViaApi } from '../api/whatsapp';
 
 type Mapping = Record<string, string>;
@@ -69,7 +83,27 @@ type PersistedAppData = {
   notes: Note[];
   followUps: FollowUp[];
   activities: Activity[];
+  integrations: Integration[];
+  automationRules: AutomationRule[];
+  importMappings?: Record<string, Mapping>;
+  revision?: number;
 };
+
+function sheetToAllRows(ws: XLSX.WorkSheet | undefined) {
+  if (!ws) return [];
+  const keys = Object.keys(ws).filter((key) => !key.startsWith('!'));
+  if (!keys.length) return [];
+  let maxR = 0;
+  let maxC = 0;
+  for (const key of keys) {
+    const cell = XLSX.utils.decode_cell(key);
+    if (cell.r > maxR) maxR = cell.r;
+    if (cell.c > maxC) maxC = cell.c;
+  }
+  ws['!ref'] = XLSX.utils.encode_range({ s: { r: 0, c: 0 }, e: { r: maxR, c: maxC } });
+  const rows = XLSX.utils.sheet_to_json<Record<string, unknown>>(ws, { defval: '', blankrows: false });
+  return rows.filter((row) => Object.values(row).some((value) => String(value ?? '').trim() !== ''));
+}
 
 function loadPersistedAppData(): PersistedAppData | null {
   try {
@@ -119,6 +153,12 @@ type AppContextValue = {
   notes: Note[];
   followUps: FollowUp[];
   activities: Activity[];
+  integrations: Integration[];
+  automationRules: AutomationRule[];
+  saveIntegration: (item: Integration) => void;
+  removeIntegration: (id: string) => void;
+  saveAutomationRule: (item: AutomationRule) => void;
+  removeAutomationRule: (id: string) => void;
   search: string;
   setSearch: (v: string) => void;
   statusFilter: string | null;
@@ -137,17 +177,35 @@ type AppContextValue = {
   addCustomer: (c: Partial<Customer> & { companyId: string; accountNo: string; name: string }, equipmentItems?: Partial<Equipment>[]) => Customer | null;
   updateCustomer: (c: Customer, changes?: string[]) => void;
   archiveCustomer: (id: string) => void;
+  deleteCustomers: (ids: string[]) => void;
   updateStatus: (customer: Customer, status: AccountStatus) => void;
   // operational
   recordPayment: (input: { customerId: string; amount: number; paymentDate: string; reference?: string; notes?: string; clearAccount: boolean }) => void;
-  createPromise: (input: { customerId: string; amount: number; promiseDate: string; customerComment?: string; internalNote?: string }) => void;
+  createPromise: (input: {
+    customerId: string;
+    amount: number;
+    promiseDate: string;
+    customerComment?: string;
+    internalNote?: string;
+    silent?: boolean;
+  }) => void;
   updatePromiseStatus: (id: string, status: PromiseStatus, outcome?: string) => void;
   sendMessage: (input: {
     customerId: string;
     channel: 'WhatsApp' | 'Email';
     message: string;
     subject?: string;
+    isReply?: boolean;
+    inReplyTo?: string;
+    references?: string;
   }) => Promise<{ ok: boolean; error?: string }>;
+  sendBulkEmails: (input: {
+    customerIds: string[];
+    subject: string;
+    templateId?: string;
+  }) => Promise<{ sent: number; failed: number; skipped: number }>;
+  syncInbox: (opts?: { quiet?: boolean }) => Promise<{ ok: boolean; imported?: number; error?: string }>;
+  markCommunicationRead: (id: string) => void;
   logCall: (input: { customerId: string; direction: CommDirection; callResult: CallResult; notes: string; followUpRequired?: boolean; followUpDate?: string }) => void;
   addNote: (input: { customerId: string; note: string; type: NoteType; pinned?: boolean }) => void;
   deleteNote: (id: string) => void;
@@ -182,6 +240,7 @@ type AppContextValue = {
   importResult: string;
   handleFile: (file: File) => Promise<void>;
   commitImport: () => void;
+  deleteImport: (id: string) => void;
   // helpers
   getCustomer: (id: string) => Customer | undefined;
   getCompany: (id: string) => Company | undefined;
@@ -199,7 +258,21 @@ type AppContextValue = {
 
 const AppContext = createContext<AppContextValue | null>(null);
 
+const WRITE_PERMISSIONS = [
+  'customers.manage',
+  'collections.manage',
+  'companies.manage',
+  'imports.manage',
+  'communications.send',
+  'recovery.manage',
+  'templates.manage',
+  'settings.manage',
+];
+
 export function AppProvider({ children }: { children: React.ReactNode }) {
+  const { user, hasAnyPermission } = useAuth();
+  const canWriteData =
+    user?.role === 'admin' || WRITE_PERMISSIONS.some((key) => hasAnyPermission(key));
   const [companies, setCompanies] = useState<Company[]>(() => persisted?.companies ?? initialCompanies);
   const [companyId, setCompanyId] = useState(() => {
     const savedId = persisted?.companyId || '';
@@ -221,6 +294,13 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
   const [notes, setNotes] = useState<Note[]>(() => persisted?.notes ?? initialNotes);
   const [followUps, setFollowUps] = useState<FollowUp[]>(() => persisted?.followUps ?? initialFollowUps);
   const [activities, setActivities] = useState<Activity[]>(() => persisted?.activities ?? initialActivities);
+  const [integrations, setIntegrations] = useState<Integration[]>(() => persisted?.integrations ?? []);
+  const [automationRules, setAutomationRules] = useState<AutomationRule[]>(() => persisted?.automationRules ?? []);
+  const [importMappings, setImportMappings] = useState<Record<string, Mapping>>(
+    () => persisted?.importMappings ?? {},
+  );
+  const [revision, setRevision] = useState(() => Number(persisted?.revision || 0));
+  const revisionRef = useRef(Number(persisted?.revision || 0));
   const [search, setSearch] = useState('');
   const [statusFilter, setStatusFilter] = useState<string | null>('All statuses');
   const [importRows, setImportRows] = useState<Record<string, unknown>[]>([]);
@@ -230,6 +310,7 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
   const [loading, setLoading] = useState(true);
   const [hydrated, setHydrated] = useState(false);
   const skipServerSave = useRef(true);
+  const emailPromiseHandled = useRef(new Set<string>());
 
   function applyPersistedData(data: PersistedAppData) {
     const list = Array.isArray(data.companies) ? data.companies : [];
@@ -243,10 +324,33 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
     setEquipment(Array.isArray(data.equipment) ? data.equipment : []);
     setPromises(Array.isArray(data.promises) ? data.promises : []);
     setPayments(Array.isArray(data.payments) ? data.payments : []);
-    setCommunications(Array.isArray(data.communications) ? data.communications : []);
+    let comms = Array.isArray(data.communications) ? data.communications : [];
+    try {
+      if (!localStorage.getItem('ch_inbox_read_seed_v1')) {
+        comms = comms.map((item) =>
+          item.direction === 'Incoming' && !item.readAt ? { ...item, readAt: item.createdAt } : item,
+        );
+        localStorage.setItem('ch_inbox_read_seed_v1', '1');
+      }
+      if (!localStorage.getItem('ch_promise_email_seed_v1')) {
+        comms = comms.map((item) =>
+          item.direction === 'Incoming' && !item.handledAs ? { ...item, handledAs: 'none' } : item,
+        );
+        localStorage.setItem('ch_promise_email_seed_v1', '1');
+      }
+    } catch {
+      // private mode
+    }
+    setCommunications(comms);
     setNotes(Array.isArray(data.notes) ? data.notes : []);
     setFollowUps(Array.isArray(data.followUps) ? data.followUps : []);
     setActivities(Array.isArray(data.activities) ? data.activities : []);
+    setIntegrations(Array.isArray(data.integrations) ? data.integrations : []);
+    setAutomationRules(Array.isArray(data.automationRules) ? data.automationRules : []);
+    setImportMappings(data.importMappings && typeof data.importMappings === 'object' ? data.importMappings : {});
+    const nextRevision = Number(data.revision || 0);
+    revisionRef.current = nextRevision;
+    setRevision(nextRevision);
   }
 
   useEffect(() => {
@@ -273,7 +377,7 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
         } else if (localCompanies > 0 && persisted) {
           // First login on this server: publish this browser's data so other browsers can see it
           applyPersistedData(persisted);
-          await saveAppData(persisted);
+          await saveAppData({ ...persisted, revision: Number(remote.data.revision || 0) });
         } else {
           applyPersistedData({
             companies: [],
@@ -289,6 +393,10 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
             notes: [],
             followUps: [],
             activities: [],
+            integrations: [],
+            automationRules: [],
+            importMappings: {},
+            revision: 0,
           });
         }
       }
@@ -319,20 +427,40 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
       notes,
       followUps,
       activities,
+      integrations,
+      automationRules,
+      importMappings,
+      revision: revisionRef.current,
     };
     try {
-      localStorage.setItem(APP_STORAGE_KEY, JSON.stringify(payload));
+      localStorage.setItem(APP_STORAGE_KEY, JSON.stringify({ ...payload, revision }));
     } catch {
       // Quota / private mode — keep working in-memory
     }
 
-    if (!hydrated || skipServerSave.current || !getStoredToken()) return;
+    if (!hydrated || skipServerSave.current || !getStoredToken() || !canWriteData) return;
 
     const timer = window.setTimeout(() => {
       void saveAppData(payload).then((result) => {
-        if (!result.ok) {
-          console.warn('[data] server sync failed:', result.error);
+        if (result.ok) {
+          if (typeof result.revision === 'number') {
+            revisionRef.current = result.revision;
+            setRevision(result.revision);
+          }
+          return;
         }
+        if (result.stale && result.data) {
+          skipServerSave.current = true;
+          applyPersistedData(result.data as PersistedAppData);
+          window.setTimeout(() => {
+            skipServerSave.current = false;
+          }, 0);
+          notifyWarning(result.error || 'Loaded the latest data from another session.', {
+            title: 'Workspace updated',
+          });
+          return;
+        }
+        console.warn('[data] server sync failed:', result.error);
       });
     }, 700);
 
@@ -351,7 +479,11 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
     notes,
     followUps,
     activities,
+    integrations,
+    automationRules,
+    importMappings,
     hydrated,
+    canWriteData,
   ]);
 
   useEffect(() => {
@@ -364,12 +496,117 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
     }
   }, [companies, companyId]);
 
+  useEffect(() => {
+    if (!hydrated || !companyId) return;
+    setTemplates((prev) => {
+      const defaults = defaultEmailTemplates(companyId);
+      const byId = new Map(defaults.map((t) => [t.id, t]));
+      const next = prev.map((t) => {
+        const fresh = byId.get(t.id);
+        if (fresh && isLegacyCollectionBody(t.body)) return { ...t, body: fresh.body };
+        return t;
+      });
+      if (next.some((t) => t.companyId === companyId && t.channel === 'Email')) return next;
+      return [...defaults, ...next];
+    });
+  }, [hydrated, companyId]);
+
   const toastSuccess = useCallback((message: string) => {
-    notifications.show({ color: 'teal', message, title: 'Success' });
+    notifySuccess(message);
   }, []);
   const toastError = useCallback((message: string) => {
-    notifications.show({ color: 'red', message, title: 'Error' });
+    notifyError(message);
   }, []);
+
+  const syncInbox = useCallback(
+    async (opts?: { quiet?: boolean }) => {
+      const result = await syncInboxViaApi();
+      if (!result.ok) {
+        if (!opts?.quiet) toastError(result.error);
+        return result;
+      }
+
+      const incoming = result.communications || [];
+      if (incoming.length) {
+        setCommunications((prev) => {
+          const map = new Map(prev.map((c) => [c.id, c]));
+          for (const item of incoming) {
+            const previous = map.get(item.id);
+            map.set(item.id, {
+              ...(previous || {}),
+              ...item,
+              readAt: previous?.readAt || item.readAt,
+              handledAs: previous?.handledAs || item.handledAs,
+            } as Communication);
+          }
+          return [...map.values()].sort((a, b) => String(b.createdAt || '').localeCompare(String(a.createdAt || '')));
+        });
+        if (result.activities?.length) {
+          setActivities((prev) => {
+            const map = new Map(prev.map((a) => [a.id, a]));
+            for (const item of result.activities || []) {
+              map.set(item.id, { ...(map.get(item.id) || {}), ...item });
+            }
+            return [...map.values()];
+          });
+        }
+        if (result.customers?.length) {
+          const patch = new Map(result.customers.map((c) => [c.id, c]));
+          setCustomers((prev) =>
+            prev.map((c) => {
+              const next = patch.get(c.id);
+              return next
+                ? {
+                    ...c,
+                    lastContact: next.lastContact || c.lastContact,
+                    collectionStage: (next.collectionStage as Customer['collectionStage']) || c.collectionStage,
+                  }
+                : c;
+            }),
+          );
+        }
+        if (!opts?.quiet && (result.imported || result.reassigned)) {
+          toastSuccess(
+            result.imported
+              ? result.imported === 1
+                ? 'Imported 1 email reply.'
+                : `Imported ${result.imported} email replies.`
+              : 'Placed a reply on the matching account.',
+          );
+        }
+      } else if (!opts?.quiet) {
+        toastSuccess('Inbox checked. No new customer replies.');
+      }
+      return { ok: true as const, imported: result.imported };
+    },
+    [toastError, toastSuccess],
+  );
+
+  useEffect(() => {
+    if (!hydrated || !getStoredToken()) return undefined;
+    const tick = () => {
+      if (document.visibilityState === 'hidden') return;
+      void syncInbox({ quiet: true });
+    };
+    tick();
+    const timer = window.setInterval(tick, 20_000);
+    const onVisible = () => {
+      if (document.visibilityState === 'visible') tick();
+    };
+    document.addEventListener('visibilitychange', onVisible);
+    window.addEventListener('focus', onVisible);
+    return () => {
+      window.clearInterval(timer);
+      document.removeEventListener('visibilitychange', onVisible);
+      window.removeEventListener('focus', onVisible);
+    };
+  }, [hydrated, syncInbox]);
+
+  function markCommunicationRead(id: string) {
+    setCommunications((prev) =>
+      prev.map((item) => (item.id === id && !item.readAt && item.direction === 'Incoming' ? { ...item, readAt: nowIso() } : item)),
+    );
+  }
 
   const addActivity = useCallback(
     (partial: Omit<Activity, 'id' | 'createdAt' | 'user'> & { user?: string; createdAt?: string }) => {
@@ -409,12 +646,15 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
 
   const filteredCustomers = useMemo(
     () =>
-      companyCustomers.filter((c) => {
-        const q = search.toLowerCase();
-        const matches = !q || [c.name, c.accountNo, c.phone, c.email].some((v) => (v || '').toLowerCase().includes(q));
-        const statusMatches = !statusFilter || statusFilter === 'All statuses' || c.status === statusFilter;
-        return matches && statusMatches;
-      }),
+      companyCustomers
+        .filter((c) => {
+          const q = search.toLowerCase();
+          const matches = !q || [c.name, c.accountNo, c.phone, c.email].some((v) => (v || '').toLowerCase().includes(q));
+          const statusMatches = !statusFilter || statusFilter === 'All statuses' || c.status === statusFilter;
+          return matches && statusMatches;
+        })
+        .slice()
+        .sort((a, b) => compareAccountNo(a.accountNo, b.accountNo)),
     [companyCustomers, search, statusFilter],
   );
 
@@ -426,6 +666,7 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
     setImportRows([]);
     setImportFile('');
     setImportResult('');
+    setMapping(importMappings[id] || {});
   }
 
   function addCompany(input: Omit<Company, 'id'> & { id?: string }) {
@@ -511,8 +752,8 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
       outstanding: input.outstanding || 0,
       originalOutstanding: input.originalOutstanding ?? input.outstanding ?? 0,
       dueDate: input.dueDate || todayIso(),
-      status: input.status || (input.outstanding && input.outstanding > 0 ? 'Payment Due' : 'Paid'),
-      collectionStage: input.collectionStage || (input.outstanding && input.outstanding > 0 ? 'New Overdue' : 'Closed'),
+      status: input.status || (input.outstanding ? 'Payment Due' : 'Paid'),
+      collectionStage: input.collectionStage || (input.outstanding ? 'New Overdue' : 'Closed'),
       lastContact: 'Not contacted',
       equipment: input.equipment,
       address: input.address,
@@ -598,6 +839,31 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
       description: `Customer ${customer.name} archived.`,
     });
     toastSuccess('Customer archived.');
+  }
+
+  function deleteCustomers(ids: string[]) {
+    const unique = [...new Set(ids.filter(Boolean))];
+    if (!unique.length) return;
+    const removing = new Set(unique);
+    const targets = customers.filter((c) => removing.has(c.id));
+    if (!targets.length) return;
+    setCustomers((prev) => prev.filter((c) => !removing.has(c.id)));
+    setPromises((prev) => prev.filter((p) => !removing.has(p.customerId)));
+    setPayments((prev) => prev.filter((p) => !removing.has(p.customerId)));
+    setCommunications((prev) => prev.filter((c) => !removing.has(c.customerId)));
+    setNotes((prev) => prev.filter((n) => !removing.has(n.customerId)));
+    setFollowUps((prev) => prev.filter((f) => !removing.has(f.customerId)));
+    setEquipment((prev) => prev.filter((e) => !removing.has(e.customerId)));
+    setRecoveries((prev) => prev.filter((r) => !removing.has(r.customerId)));
+    addActivity({
+      companyId: targets[0].companyId,
+      action: 'Deleted outstanding accounts',
+      description:
+        unique.length === 1
+          ? `Deleted account ${targets[0].name} (${targets[0].accountNo}).`
+          : `Deleted ${unique.length} outstanding accounts.`,
+    });
+    toastSuccess(unique.length === 1 ? 'Account deleted.' : `${unique.length} accounts deleted.`);
   }
 
   function updateStatus(customer: Customer, status: AccountStatus) {
@@ -733,21 +999,31 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
     promiseDate: string;
     customerComment?: string;
     internalNote?: string;
+    silent?: boolean;
   }) {
     const customer = customers.find((c) => c.id === input.customerId);
     if (!customer) return;
-    const promise: PaymentPromise = {
-      id: uid('pr'),
-      companyId: customer.companyId,
-      customerId: customer.id,
-      amount: input.amount,
-      promiseDate: input.promiseDate,
-      createdAt: nowIso(),
-      status: 'Pending',
-      customerComment: input.customerComment,
-      internalNote: input.internalNote,
-    };
-    setPromises((prev) => [promise, ...prev]);
+    const existing = promises.find((p) => p.customerId === customer.id && p.status === 'Pending');
+    const promise: PaymentPromise = existing
+      ? {
+          ...existing,
+          amount: input.amount,
+          promiseDate: input.promiseDate,
+          customerComment: input.customerComment || existing.customerComment,
+          internalNote: input.internalNote || existing.internalNote,
+        }
+      : {
+          id: uid('pr'),
+          companyId: customer.companyId,
+          customerId: customer.id,
+          amount: input.amount,
+          promiseDate: input.promiseDate,
+          createdAt: nowIso(),
+          status: 'Pending',
+          customerComment: input.customerComment,
+          internalNote: input.internalNote,
+        };
+    setPromises((prev) => (existing ? prev.map((p) => (p.id === existing.id ? promise : p)) : [promise, ...prev]));
     setCustomers((prev) =>
       prev.map((c) =>
         c.id === customer.id
@@ -763,27 +1039,88 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
           : c,
       ),
     );
-    setFollowUps((prev) => [
-      {
-        id: uid('fu'),
-        companyId: customer.companyId,
-        customerId: customer.id,
-        followUpDate: input.promiseDate,
-        channel: 'Any',
-        assignedUser: customer.assignedCollector || actorName(),
-        notes: `Follow up on promise of ${money(input.amount)}`,
-        createdAt: nowIso(),
-      },
-      ...prev,
-    ]);
+    setFollowUps((prev) => {
+      const current = prev.find((f) => f.customerId === customer.id && /follow up on promise/i.test(f.notes || ''));
+      if (current) {
+        return prev.map((f) =>
+          f.id === current.id
+            ? { ...f, followUpDate: input.promiseDate, notes: `Follow up on promise of ${money(input.amount)}` }
+            : f,
+        );
+      }
+      return [
+        {
+          id: uid('fu'),
+          companyId: customer.companyId,
+          customerId: customer.id,
+          followUpDate: input.promiseDate,
+          channel: 'Any',
+          assignedUser: customer.assignedCollector || actorName(),
+          notes: `Follow up on promise of ${money(input.amount)}`,
+          createdAt: nowIso(),
+        },
+        ...prev,
+      ];
+    });
     addActivity({
       companyId: customer.companyId,
       customerId: customer.id,
-      action: 'Promise created',
-      description: `Promise to pay ${money(input.amount)} recorded for ${safeDate(input.promiseDate)}.`,
+      action: existing ? 'Promise updated' : 'Promise created',
+      description: existing
+        ? `Promise date updated to ${safeDate(input.promiseDate)} (${money(input.amount)}).`
+        : `Promise to pay ${money(input.amount)} recorded for ${safeDate(input.promiseDate)}.`,
     });
-    toastSuccess('Promise to pay recorded.');
+    if (!input.silent) toastSuccess(existing ? 'Promise to pay updated.' : 'Promise to pay recorded.');
   }
+
+  useEffect(() => {
+    if (!hydrated) return;
+    const pending = communications
+      .filter(
+        (item) =>
+          item.channel === 'Email' &&
+          item.direction === 'Incoming' &&
+          !item.handledAs &&
+          !emailPromiseHandled.current.has(item.id),
+      )
+      .sort((a, b) => String(b.createdAt || '').localeCompare(String(a.createdAt || '')));
+    if (!pending.length) return;
+
+    const marks = new Map<string, NonNullable<Communication['handledAs']>>();
+    const queuedCustomers = new Set<string>();
+
+    for (const comm of pending) {
+      emailPromiseHandled.current.add(comm.id);
+      const customer = customers.find((item) => item.id === comm.customerId);
+      const body = splitEmailThread(comm.message).body || '';
+      const parsed = parsePromiseFromReply(body);
+
+      if (!parsed || !customer || isPaidOrZeroBalance(customer) || customer.status === 'Cancelled') {
+        marks.set(comm.id, parsed ? 'skipped' : 'none');
+        continue;
+      }
+
+      marks.set(comm.id, 'promise');
+      if (queuedCustomers.has(customer.id)) continue;
+      queuedCustomers.add(customer.id);
+
+      createPromise({
+        customerId: customer.id,
+        amount: customer.outstanding,
+        promiseDate: parsed.date,
+        customerComment: body.slice(0, 500),
+        internalNote: parsed.dateInferred
+          ? `Auto from email ${comm.id} — no date given, used ${safeDate(parsed.date)}.`
+          : `Auto from email ${comm.id}.`,
+        silent: true,
+      });
+      notifySuccess(`${customer.name} marked Promise to Pay for ${safeDate(parsed.date)}.`, {
+        title: 'Promise to Pay',
+      });
+    }
+
+    setCommunications((prev) => prev.map((item) => (marks.has(item.id) ? { ...item, handledAs: marks.get(item.id) } : item)));
+  }, [hydrated, communications, customers, promises]);
 
   function updatePromiseStatus(id: string, status: PromiseStatus, outcome?: string) {
     const promise = promises.find((p) => p.id === id);
@@ -811,6 +1148,9 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
     channel: 'WhatsApp' | 'Email';
     message: string;
     subject?: string;
+    isReply?: boolean;
+    inReplyTo?: string;
+    references?: string;
   }): Promise<{ ok: boolean; error?: string }> {
     const customer = customers.find((c) => c.id === input.customerId);
     if (!customer) return { ok: false, error: 'Customer not found.' };
@@ -829,6 +1169,8 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
         from: company?.whatsappSender || company?.whatsappNumber,
         customerName: customer.name,
         accountNo: customer.accountNo,
+        dueDate: customer.dueDate,
+        amount: money(customer.outstanding),
       });
 
       if (!result.ok) {
@@ -898,12 +1240,22 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
       return { ok: false, error: 'Customer email is missing.' };
     }
 
+    if (!input.isReply && isPaidOrZeroBalance(customer)) {
+      const error =
+        'This account is paid (R 0). Collection emails are blocked so they are not flagged as spam.';
+      toastError(error);
+      return { ok: false, error };
+    }
+
+    const companyRow = companies.find((c) => c.id === customer.companyId);
     const result = await sendMailViaApi({
       to,
-      subject: input.subject || `Account ${customer.accountNo} outstanding balance`,
+      subject: input.subject || collectionEmailSubject(customer.accountNo, companyRow?.name),
       text: input.message,
       customerName: customer.name,
       accountNo: customer.accountNo,
+      inReplyTo: input.inReplyTo,
+      references: input.references,
     });
 
     if (!result.ok) {
@@ -944,6 +1296,8 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
         status: 'Sent',
         createdAt: nowIso(),
         createdBy: actorName(),
+        messageId: result.messageId,
+        externalId: result.messageId ? `smtp:${result.messageId}` : undefined,
       },
       ...prev,
     ]);
@@ -966,7 +1320,55 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
       description: 'Email message sent via SMTP.',
     });
     toastSuccess('Email sent successfully.');
+    window.setTimeout(() => {
+      void syncInbox({ quiet: true });
+    }, 5000);
     return { ok: true };
+  }
+
+  async function sendBulkEmails(input: { customerIds: string[]; subject: string; templateId?: string }) {
+    const template = templates.find((t) => t.id === input.templateId && t.channel === 'Email');
+    let sent = 0;
+    let failed = 0;
+    let skipped = 0;
+
+    for (const customerId of input.customerIds) {
+      const customer = customers.find((c) => c.id === customerId);
+      if (!customer || !String(customer.email || '').includes('@') || isPaidOrZeroBalance(customer)) {
+        skipped += 1;
+        continue;
+      }
+      const companyRow = companies.find((c) => c.id === customer.companyId);
+      const body = fillTemplate(template?.body || '', {
+        customer_name: customer.name,
+        name: customer.name,
+        account_number: customer.accountNo,
+        account_no: customer.accountNo,
+        outstanding_amount: money(customer.outstanding),
+        amount: money(customer.outstanding),
+        due_date: safeDate(customer.dueDate),
+        company_name: companyRow?.name,
+        company: companyRow?.name,
+        promise_date: customer.promisedDate,
+      });
+      const result = await sendMessage({
+        customerId: customer.id,
+        channel: 'Email',
+        message: body,
+        subject: input.subject,
+      });
+      if (result.ok) sent += 1;
+      else failed += 1;
+    }
+
+    if (sent) toastSuccess(`Emailed ${sent} account${sent === 1 ? '' : 's'}.`);
+    if (failed) toastError(`${failed} email${failed === 1 ? '' : 's'} failed.`);
+    if (skipped) {
+      notifyWarning(`Skipped ${skipped} account${skipped === 1 ? '' : 's'} with no email, paid status, or R 0 balance.`, {
+        title: 'Skipped',
+      });
+    }
+    return { sent, failed, skipped };
   }
 
   function logCall(input: {
@@ -1343,21 +1745,41 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
     const buffer = await file.arrayBuffer();
     const wb = XLSX.read(buffer, { type: 'array', cellDates: true });
     const ws = wb.Sheets[wb.SheetNames[0]];
-    const rows = XLSX.utils.sheet_to_json<Record<string, unknown>>(ws, { defval: '' });
+    const rows = sheetToAllRows(ws);
     const headers = rows.length ? Object.keys(rows[0]) : [];
     setImportRows(rows);
     setImportFile(file.name);
     setImportResult('');
-    setMapping({
+    const detected: Mapping = {
       accountNo: findColumn(headers, 'accountNo'),
       name: findColumn(headers, 'name'),
-      phone: findColumn(headers, 'phone'),
-      email: findColumn(headers, 'email'),
+      customerReference: findColumn(headers, 'customerReference'),
+      servicePackage: findColumn(headers, 'servicePackage'),
+      monthlySubscription: findColumn(headers, 'monthlySubscription'),
+      originalOutstanding: findColumn(headers, 'originalOutstanding'),
       outstanding: findColumn(headers, 'outstanding'),
       dueDate: findColumn(headers, 'dueDate'),
+      collectionStage: findColumn(headers, 'collectionStage'),
+      phone: findColumn(headers, 'phone'),
+      whatsapp: findColumn(headers, 'whatsapp'),
+      email: findColumn(headers, 'email'),
+      preferredContact: findColumn(headers, 'preferredContact'),
+      language: findColumn(headers, 'language'),
       address: findColumn(headers, 'address'),
+      suburb: findColumn(headers, 'suburb'),
+      city: findColumn(headers, 'city'),
+      province: findColumn(headers, 'province'),
+      postalCode: findColumn(headers, 'postalCode'),
+      nextFollowUp: findColumn(headers, 'nextFollowUp'),
+      assignedCollector: findColumn(headers, 'assignedCollector'),
       equipment: findColumn(headers, 'equipment'),
-    });
+    };
+    const saved = importMappings[companyId] || {};
+    const next = { ...detected };
+    for (const [key, col] of Object.entries(saved)) {
+      if (col && headers.includes(col)) next[key] = col;
+    }
+    setMapping(next);
   }
 
   function value(row: Record<string, unknown>, key: string) {
@@ -1374,23 +1796,133 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
     return isNaN(d.getTime()) ? todayIso() : d.toISOString().slice(0, 10);
   }
   function numberValue(raw: unknown) {
-    return Number(String(raw).replace(/[^0-9.-]/g, '')) || 0;
+    return parseSignedAmount(raw);
   }
+  function mappedText(row: Record<string, unknown>, key: string) {
+    if (!mapping[key]) return undefined;
+    const text = String(value(row, key) ?? '').trim();
+    return text || undefined;
+  }
+  function mappedNumber(row: Record<string, unknown>, key: string) {
+    if (!mapping[key]) return undefined;
+    const raw = value(row, key);
+    if (raw === '' || raw == null) return undefined;
+    return numberValue(raw);
+  }
+  function mappedDate(row: Record<string, unknown>, key: string) {
+    if (!mapping[key]) return undefined;
+    const raw = value(row, key);
+    if (raw === '' || raw == null) return undefined;
+    return dateValue(raw);
+  }
+  function parsePreferredContact(raw?: string): string | undefined {
+    if (!raw) return undefined;
+    const n = normalize(raw);
+    if (!n) return undefined;
+    if (n.includes('whatsapp') || n === 'wa' || n === 'wapp') return 'WhatsApp';
+    if (n.includes('email') || n.includes('mail')) return 'Email';
+    if (
+      n.includes('phone') ||
+      n.includes('call') ||
+      n.includes('cell') ||
+      n.includes('mobile') ||
+      n.includes('sms') ||
+      n.includes('tel')
+    ) {
+      return 'Phone';
+    }
+    if (/^\+?\d[\d\s+.-]{5,}$/.test(raw)) return 'Phone';
+    return raw.trim();
+  }
+  function parseCollectionStage(raw?: string): CollectionStage | undefined {
+    if (!raw) return undefined;
+    const stages: CollectionStage[] = [
+      'New Overdue',
+      'Follow-up Due',
+      'Contacted',
+      'Promise to Pay',
+      'Payment Pending',
+      'Paid',
+      'Unresponsive',
+      'Escalated',
+      'Service Cancelled',
+      'Recovery Required',
+      'Closed',
+    ];
+    return stages.find((stage) => normalize(stage) === normalize(raw));
+  }
+  function parseAccountStatus(raw?: string): AccountStatus | undefined {
+    if (!raw) return undefined;
+    const statuses: AccountStatus[] = [
+      'Payment Due',
+      'Follow-up',
+      'Promise to Pay',
+      'Paid',
+      'Unresponsive',
+      'Cancelled',
+      'Recovery Required',
+    ];
+    return statuses.find((status) => normalize(status) === normalize(raw));
+  }
+  function extrasFromRow(row: Record<string, unknown>): Partial<Customer> {
+    const extras: Partial<Customer> = {};
+    const customerReference = mappedText(row, 'customerReference');
+    const servicePackage = mappedText(row, 'servicePackage');
+    const monthlySubscription = mappedNumber(row, 'monthlySubscription');
+    const originalOutstanding = mappedNumber(row, 'originalOutstanding');
+    const dueDate = mappedDate(row, 'dueDate');
+    const phone = mappedText(row, 'phone');
+    const whatsapp = mappedText(row, 'whatsapp');
+    const email = mappedText(row, 'email');
+    const language = mappedText(row, 'language');
+    const address = mappedText(row, 'address');
+    const suburb = mappedText(row, 'suburb');
+    const city = mappedText(row, 'city');
+    const province = mappedText(row, 'province');
+    const postalCode = mappedText(row, 'postalCode');
+    const nextFollowUp = mappedDate(row, 'nextFollowUp');
+    const assignedCollector = mappedText(row, 'assignedCollector');
+    const equipment = mappedText(row, 'equipment');
+    const preferredContact = parsePreferredContact(mappedText(row, 'preferredContact'));
+    const stageRaw = mappedText(row, 'collectionStage');
+    const collectionStage = parseCollectionStage(stageRaw);
+    const status = parseAccountStatus(stageRaw) || (
+      collectionStage === 'Paid' || collectionStage === 'Closed'
+        ? 'Paid'
+        : collectionStage === 'Recovery Required'
+          ? 'Recovery Required'
+          : collectionStage === 'Unresponsive'
+            ? 'Unresponsive'
+            : collectionStage === 'Promise to Pay'
+              ? 'Promise to Pay'
+              : collectionStage === 'Follow-up Due'
+                ? 'Follow-up'
+                : collectionStage === 'Service Cancelled'
+                  ? 'Cancelled'
+                  : undefined
+    );
 
-  /** Stable account key so Excel formatting (spaces, dashes, trailing .0) still matches. */
-  function normalizeAccountKey(raw: unknown) {
-    if (raw == null || raw === '') return '';
-    if (typeof raw === 'number' && Number.isFinite(raw)) {
-      return String(Math.trunc(raw));
-    }
-    let s = String(raw).trim();
-    if (/^\d+\.0+$/.test(s)) s = s.replace(/\.0+$/, '');
-    // Scientific notation from Excel on long numeric accounts
-    if (/e/i.test(s) && !Number.isNaN(Number(s))) {
-      const n = Number(s);
-      if (Number.isFinite(n)) return String(Math.trunc(n));
-    }
-    return s.replace(/[\s\-_/]/g, '').toLowerCase();
+    if (customerReference) extras.customerReference = customerReference;
+    if (servicePackage) extras.servicePackage = servicePackage;
+    if (monthlySubscription != null) extras.monthlySubscription = monthlySubscription;
+    if (originalOutstanding != null) extras.originalOutstanding = originalOutstanding;
+    if (dueDate) extras.dueDate = dueDate;
+    if (phone) extras.phone = phone;
+    if (whatsapp) extras.whatsapp = whatsapp;
+    if (email) extras.email = email;
+    if (language) extras.language = language;
+    if (address) extras.address = address;
+    if (suburb) extras.suburb = suburb;
+    if (city) extras.city = city;
+    if (province) extras.province = province;
+    if (postalCode) extras.postalCode = postalCode;
+    if (nextFollowUp) extras.nextFollowUp = nextFollowUp;
+    if (assignedCollector) extras.assignedCollector = assignedCollector;
+    if (equipment) extras.equipment = equipment;
+    if (preferredContact) extras.preferredContact = preferredContact;
+    if (collectionStage) extras.collectionStage = collectionStage;
+    if (status) extras.status = status;
+    return extras;
   }
 
   function commitImport() {
@@ -1451,15 +1983,19 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
         );
       }
 
+      const extras = extrasFromRow(row);
       if (ix >= 0) {
         const prev = next[ix];
         const prevAmount = prev.outstanding;
         next[ix] = {
           ...prev,
+          ...extras,
           outstanding: amount,
           archived: false,
-          status: amount === 0 ? 'Paid' : prev.status === 'Paid' && amount > 0 ? 'Payment Due' : prev.status,
-          collectionStage: amount === 0 ? 'Paid' : prev.collectionStage,
+          status:
+            extras.status ||
+            (amount === 0 ? 'Paid' : prev.status === 'Paid' && amount !== 0 ? 'Payment Due' : prev.status),
+          collectionStage: extras.collectionStage || (amount === 0 ? 'Paid' : prev.collectionStage),
         };
         updated++;
         if (prevAmount !== amount) {
@@ -1480,17 +2016,28 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
           companyId,
           accountNo: account,
           name,
-          phone: String(value(row, 'phone') || ''),
-          email: String(value(row, 'email') || ''),
+          phone: extras.phone || '',
+          whatsapp: extras.whatsapp || extras.phone || '',
+          email: extras.email || '',
           outstanding: amount,
-          originalOutstanding: amount,
-          dueDate: value(row, 'dueDate') ? dateValue(value(row, 'dueDate')) : todayIso(),
-          status: amount > 0 ? 'Payment Due' : 'Paid',
-          collectionStage: amount > 0 ? 'New Overdue' : 'Closed',
+          originalOutstanding: extras.originalOutstanding ?? amount,
+          dueDate: extras.dueDate || todayIso(),
+          status: extras.status || (amount === 0 ? 'Paid' : 'Payment Due'),
+          collectionStage: extras.collectionStage || (amount === 0 ? 'Closed' : 'New Overdue'),
           lastContact: 'Not contacted',
-          address: String(value(row, 'address') || ''),
-          equipment: String(value(row, 'equipment') || ''),
-          assignedCollector: actorName(),
+          address: extras.address || '',
+          suburb: extras.suburb,
+          city: extras.city,
+          province: extras.province,
+          postalCode: extras.postalCode,
+          customerReference: extras.customerReference,
+          servicePackage: extras.servicePackage,
+          monthlySubscription: extras.monthlySubscription,
+          preferredContact: extras.preferredContact,
+          language: extras.language,
+          nextFollowUp: extras.nextFollowUp,
+          equipment: extras.equipment || '',
+          assignedCollector: extras.assignedCollector || actorName(),
         });
         created++;
         activityBuffer.push({
@@ -1532,11 +2079,30 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
     setImportResult(
       `Imported into ${company.name}: ${created} new, ${updated} balances updated, ${cleared} not in this file, ${errors} skipped.`,
     );
+    setImportMappings((prev) => ({ ...prev, [companyId]: mapping }));
     toastSuccess(
       updated && !created
         ? `Updated ${updated} existing account balance${updated === 1 ? '' : 's'}.`
         : 'Import completed successfully.',
     );
+  }
+
+  function deleteImport(id: string) {
+    const batch = imports.find((item) => item.id === id);
+    if (!batch) return;
+    setImports((prev) => prev.filter((item) => item.id !== id));
+    setActivities((prev) => [
+      {
+        id: uid('act'),
+        companyId: batch.companyId,
+        user: actorName(),
+        action: 'Deleted import file',
+        description: `Removed import batch ${batch.id} (${batch.file}). Customer accounts were left unchanged.`,
+        createdAt: nowIso(),
+      },
+      ...prev,
+    ]);
+    toastSuccess(`Deleted ${batch.file}.`);
   }
 
   const valueCtx: AppContextValue = {
@@ -1567,6 +2133,18 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
     notes,
     followUps,
     activities,
+    integrations,
+    automationRules,
+    saveIntegration: (item) => {
+      setIntegrations((prev) => prev.some((x) => x.id === item.id) ? prev.map((x) => x.id === item.id ? item : x) : [item, ...prev]);
+      toastSuccess(`${item.provider} connection saved.`);
+    },
+    removeIntegration: (id) => setIntegrations((prev) => prev.filter((x) => x.id !== id)),
+    saveAutomationRule: (item) => {
+      setAutomationRules((prev) => prev.some((x) => x.id === item.id) ? prev.map((x) => x.id === item.id ? item : x) : [item, ...prev]);
+      toastSuccess('Automation rule saved.');
+    },
+    removeAutomationRule: (id) => setAutomationRules((prev) => prev.filter((x) => x.id !== id)),
     search,
     setSearch,
     statusFilter,
@@ -1583,11 +2161,15 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
     addCustomer,
     updateCustomer,
     archiveCustomer,
+    deleteCustomers,
     updateStatus,
     recordPayment,
     createPromise,
     updatePromiseStatus,
     sendMessage,
+    sendBulkEmails,
+    syncInbox,
+    markCommunicationRead,
     logCall,
     addNote,
     deleteNote,
@@ -1605,6 +2187,7 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
     importResult,
     handleFile,
     commitImport,
+    deleteImport,
     getCustomer: (id) => customers.find((c) => c.id === id),
     getCompany: (id) => companies.find((c) => c.id === id),
     companyEquipment: (customerId) =>
@@ -1614,7 +2197,10 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
     companyPayments: (customerId) =>
       payments.filter((p) => p.companyId === companyId && (!customerId || p.customerId === customerId)),
     companyCommunications: (customerId) =>
-      communications.filter((c) => c.companyId === companyId && (!customerId || c.customerId === customerId)),
+      communications
+        .filter((c) => c.companyId === companyId && (!customerId || c.customerId === customerId))
+        .slice()
+        .sort((a, b) => String(b.createdAt || '').localeCompare(String(a.createdAt || ''))),
     companyNotes: (customerId) =>
       notes.filter((n) => n.companyId === companyId && (!customerId || n.customerId === customerId)),
     companyFollowUps: (customerId) =>

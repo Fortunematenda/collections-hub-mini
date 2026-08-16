@@ -1,6 +1,7 @@
 import { Card, Text, ThemeIcon } from '@mantine/core';
 import type { LucideIcon } from 'lucide-react';
 import { Search } from 'lucide-react';
+import { splitEmailThread } from '../utils';
 
 export function Metric({
   label,
@@ -156,6 +157,40 @@ export function CustomerIdentity({
         </div>
         {accountNo && <div className="customer-account">{accountNo}</div>}
       </div>
+    </div>
+  );
+}
+
+export function EmailThreadPreview({
+  subject,
+  message,
+  expanded,
+  compact,
+}: {
+  subject?: string;
+  message: string;
+  expanded?: boolean;
+  compact?: boolean;
+}) {
+  const { body } = splitEmailThread(message);
+  return (
+    <div className="email-thread">
+      {subject ? (
+        <Text className="email-thread-subject" size={compact ? 'xs' : 'sm'} fw={650} mt={compact ? 4 : 8}>
+          {subject}
+        </Text>
+      ) : null}
+      {body ? (
+        <Text
+          className="email-thread-body"
+          size={compact ? 'xs' : 'sm'}
+          mt={6}
+          lineClamp={expanded ? undefined : compact ? 2 : 5}
+          style={{ whiteSpace: 'pre-wrap', lineHeight: 1.45 }}
+        >
+          {body}
+        </Text>
+      ) : null}
     </div>
   );
 }

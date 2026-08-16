@@ -1,11 +1,11 @@
-import 'dotenv/config';
 import bcrypt from 'bcryptjs';
 import cors from 'cors';
+import dotenv from 'dotenv';
 import express from 'express';
 import jwt from 'jsonwebtoken';
 import nodemailer from 'nodemailer';
 import twilio from 'twilio';
-import { randomUUID } from 'crypto';
+import { randomUUID, randomBytes, createHash } from 'crypto';
 import path from 'path';
 import { existsSync } from 'fs';
 import { fileURLToPath } from 'url';
@@ -17,10 +17,48 @@ import {
   saveAuthTables,
   writeAppStore,
 } from './db.js';
+import { imapConfigured, imapSettings, startImapPolling, syncImapInbox } from './imap-inbox.js';
+import { toWhatsAppAddress as formatWhatsAppAddress } from '../shared/phone.js';
+import { checkRateLimit, recordFailure, recordSuccess } from './lib/rate-limit.js';
+import { runCollectionsJobs } from './lib/collections-jobs.js';
+import { mergeById, preferCustomer, preferPromise } from './lib/store-merge.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
+dotenv.config({ path: path.join(__dirname, '.env') });
+
+function isProductionLike() {
+  return process.env.NODE_ENV === 'production' || Boolean(process.env.DATABASE_URL);
+}
+
+function resolveJwtSecret() {
+  const value = String(process.env.JWT_SECRET || '').trim();
+  const weak = !value || /^(change-me|collections-hub-dev-secret-change-me)$/i.test(value);
+  if (weak && isProductionLike()) {
+    console.error('[auth] Refusing to start: JWT_SECRET is missing or still the default. Set a long random value in server/.env');
+    process.exit(1);
+  }
+  if (weak) {
+    console.warn('[auth] JWT_SECRET is still the default. Set a random secret in server/.env before deploying.');
+    return 'collections-hub-dev-secret-change-me';
+  }
+  return value;
+}
+
+function resolveAdminPassword() {
+  const value = String(process.env.ADMIN_PASSWORD || '').trim();
+  if (!value && isProductionLike()) {
+    console.error('[auth] Refusing to start: ADMIN_PASSWORD is not set.');
+    process.exit(1);
+  }
+  if (!value) {
+    console.warn('[auth] ADMIN_PASSWORD is not set. Using a development-only default. Do not deploy like this.');
+    return 'Admin123!';
+  }
+  return value;
+}
+
 const PORT = Number(process.env.MAILER_PORT || process.env.PORT || 8787);
-const JWT_SECRET = process.env.JWT_SECRET || 'collections-hub-dev-secret-change-me';
+const JWT_SECRET = resolveJwtSecret();
 const JWT_EXPIRES_IN = process.env.JWT_EXPIRES_IN || '8h';
 
 /** @typedef {{ id: string; key: string; label: string; description: string; group: string; system?: boolean }} Permission */
@@ -78,6 +116,7 @@ let roles = [
           'imports.manage',
           'recovery.manage',
           'templates.manage',
+          'settings.manage',
         ].includes(p.key),
       )
       .map((p) => p.id),
@@ -94,7 +133,7 @@ let roles = [
 ];
 
 const adminEmail = (process.env.ADMIN_EMAIL || 'admin@collections.local').toLowerCase();
-const adminPasswordPlain = process.env.ADMIN_PASSWORD || 'Admin123!';
+const adminPasswordPlain = resolveAdminPassword();
 const adminPasswordHash = process.env.ADMIN_PASSWORD_HASH || bcrypt.hashSync(adminPasswordPlain, 10);
 
 /** @type {AppUser[]} */
@@ -110,22 +149,29 @@ let users = [
 ];
 
 const revokedTokens = new Set();
+/** @type {{ tokenHash: string; userId: string; expiresAt: number }[]} */
+let resetTokens = [];
 
-const smtp = {
-  host: process.env.SMTP_HOST || '',
-  port: Number(process.env.SMTP_PORT || 465),
-  secure: String(process.env.SMTP_SECURE || 'true') === 'true',
-  user: process.env.SMTP_USER || '',
-  pass: process.env.SMTP_PASS || '',
-  from: process.env.SMTP_FROM || process.env.SMTP_USER || '',
-  fromName: process.env.SMTP_FROM_NAME || 'Debt Collections',
-};
+function smtpSettings() {
+  return {
+    host: process.env.SMTP_HOST || '',
+    port: Number(process.env.SMTP_PORT || 465),
+    secure: String(process.env.SMTP_SECURE || 'true') === 'true',
+    user: process.env.SMTP_USER || '',
+    pass: String(process.env.SMTP_PASS || '').replace(/^['"]|['"]$/g, ''),
+    from: process.env.SMTP_FROM || process.env.SMTP_USER || '',
+    fromName: process.env.SMTP_FROM_NAME || 'BretuneTech',
+    replyTo: String(process.env.SMTP_REPLY_TO || '').trim(),
+  };
+}
 
 function smtpConfigured() {
+  const smtp = smtpSettings();
   return Boolean(smtp.host && smtp.user && smtp.pass && smtp.from);
 }
 
 function createTransport() {
+  const smtp = smtpSettings();
   return nodemailer.createTransport({
     host: smtp.host,
     port: smtp.port,
@@ -137,42 +183,28 @@ function createTransport() {
 const twilioConfig = {
   accountSid: process.env.TWILIO_ACCOUNT_SID || '',
   authToken: process.env.TWILIO_AUTH_TOKEN || '',
+  apiKey: process.env.TWILIO_API_KEY || '',
+  apiSecret: process.env.TWILIO_API_SECRET || '',
   from: process.env.TWILIO_WHATSAPP_FROM || '',
+  contentSid: process.env.TWILIO_CONTENT_SID || '',
   defaultCountry: process.env.TWILIO_DEFAULT_COUNTRY || '27',
 };
 
 function twilioConfigured() {
-  return Boolean(twilioConfig.accountSid && twilioConfig.authToken && twilioConfig.from);
+  const hasToken = Boolean(twilioConfig.accountSid && twilioConfig.authToken);
+  const hasKey = Boolean(twilioConfig.accountSid && twilioConfig.apiKey && twilioConfig.apiSecret);
+  return Boolean((hasToken || hasKey) && twilioConfig.from);
 }
 
 function createTwilioClient() {
-  return twilio(twilioConfig.accountSid, twilioConfig.authToken);
+  if (twilioConfig.accountSid && twilioConfig.authToken) {
+    return twilio(twilioConfig.accountSid, twilioConfig.authToken);
+  }
+  return twilio(twilioConfig.apiKey, twilioConfig.apiSecret, { accountSid: twilioConfig.accountSid });
 }
 
-/** Normalize to E.164 digits with leading +, then Twilio WhatsApp address. */
 function toWhatsAppAddress(raw, fallbackCountry = twilioConfig.defaultCountry) {
-  const value = String(raw || '').trim();
-  if (!value) return null;
-
-  if (value.toLowerCase().startsWith('whatsapp:')) {
-    const rest = value.slice('whatsapp:'.length).trim();
-    const nested = toWhatsAppAddress(rest, fallbackCountry);
-    return nested;
-  }
-
-  let digits = value.replace(/[^\d+]/g, '');
-  if (digits.startsWith('00')) digits = `+${digits.slice(2)}`;
-  if (!digits.startsWith('+')) {
-    const only = digits.replace(/\D/g, '');
-    if (only.startsWith(fallbackCountry)) digits = `+${only}`;
-    else if (only.startsWith('0') && only.length >= 9) digits = `+${fallbackCountry}${only.slice(1)}`;
-    else if (only.length >= 9) digits = `+${fallbackCountry}${only}`;
-    else return null;
-  }
-
-  const e164 = `+${digits.replace(/\D/g, '')}`;
-  if (e164.length < 11) return null;
-  return `whatsapp:${e164}`;
+  return formatWhatsAppAddress(raw, fallbackCountry);
 }
 
 function getRole(roleId) {
@@ -238,12 +270,57 @@ function authRequired(req, res, next) {
 
 function requirePermission(...keys) {
   return (req, res, next) => {
+    if (req.user?.role === 'admin') return next();
     const owned = new Set(req.user?.permissions || []);
-    const allowed = keys.some((k) => owned.has(k) || owned.has('roles.manage'));
-    // Admin role key always allowed for admin APIs
-    if (req.user?.role === 'admin' || allowed) return next();
+    if (keys.some((k) => owned.has(k))) return next();
     return res.status(403).json({ ok: false, error: 'You do not have permission for this action.' });
   };
+}
+
+const WRITE_PERMISSIONS = [
+  'customers.manage',
+  'collections.manage',
+  'companies.manage',
+  'imports.manage',
+  'communications.send',
+  'recovery.manage',
+  'templates.manage',
+  'settings.manage',
+];
+
+function ensureSystemAuth() {
+  let changed = false;
+  const seed = permissionSeed.map(([key, label, description, group]) => ({
+    id: `perm-${key}`,
+    key,
+    label,
+    description,
+    group,
+    system: true,
+  }));
+  for (const perm of seed) {
+    if (!permissions.some((item) => item.key === perm.key)) {
+      permissions = [...permissions, perm];
+      changed = true;
+    }
+  }
+  const settingsId = permissions.find((p) => p.key === 'settings.manage')?.id;
+  roles = roles.map((role) => {
+    if (role.key !== 'collections_operator' || !settingsId || role.permissionIds.includes(settingsId)) {
+      return role;
+    }
+    changed = true;
+    return { ...role, permissionIds: [...role.permissionIds, settingsId] };
+  });
+  const admin = roles.find((role) => role.key === 'admin');
+  if (admin) {
+    const allIds = permissions.map((p) => p.id);
+    if (allIds.some((id) => !admin.permissionIds.includes(id))) {
+      roles = roles.map((role) => (role.id === admin.id ? { ...role, permissionIds: allIds } : role));
+      changed = true;
+    }
+  }
+  return changed;
 }
 
 function slugify(value) {
@@ -258,7 +335,19 @@ function slugify(value) {
 const app = express();
 app.use(
   cors({
-    origin: true,
+    origin(origin, callback) {
+      const allowed = String(process.env.ALLOWED_ORIGIN || '')
+        .split(',')
+        .map((v) => v.trim())
+        .filter(Boolean);
+      if (!origin) return callback(null, true);
+      if (!allowed.length) {
+        if (isProductionLike()) return callback(new Error('ALLOWED_ORIGIN must be set in production.'));
+        return callback(null, true);
+      }
+      if (allowed.includes(origin)) return callback(null, true);
+      return callback(new Error('Origin is not allowed by CORS policy.'));
+    },
     credentials: true,
     allowedHeaders: ['Content-Type', 'Authorization'],
   }),
@@ -266,30 +355,38 @@ app.use(
 app.use(express.json({ limit: '10mb' }));
 app.get('/favicon.ico', (_req, res) => res.status(204).end());
 
+function revokedList() {
+  return [...revokedTokens].map((token) => ({ token, at: Date.now() }));
+}
+
 async function persistAuth() {
   try {
-    await saveAuthTables({ permissions, roles, users });
+    await saveAuthTables({ permissions, roles, users, revokedTokens: revokedList(), resetTokens });
   } catch (error) {
     console.error('[db] auth persist failed:', error instanceof Error ? error.message : error);
   }
 }
 
 app.get('/api/health', (_req, res) => {
+  const smtp = smtpSettings();
+  const imap = imapSettings();
   res.json({
     ok: true,
     mailer: smtpConfigured() ? 'configured' : 'missing-env',
+    imap: imapConfigured() ? 'configured' : 'missing-env',
     whatsapp: twilioConfigured() ? 'twilio' : 'missing-env',
     auth: 'jwt',
     roles: roles.length,
     permissions: permissions.length,
     host: smtp.host || null,
     from: smtp.from || null,
+    imapHost: imap.host || null,
     twilioFrom: twilioConfigured() ? twilioConfig.from : null,
     database: isUsingDatabase() ? 'postgres' : 'file-fallback',
   });
 });
 
-app.get('/api/data', authRequired, async (_req, res) => {
+app.get('/api/data', authRequired, requirePermission('companies.view', 'customers.view'), async (_req, res) => {
   try {
     const data = await readAppStore();
     return res.json({ ok: true, data });
@@ -299,28 +396,97 @@ app.get('/api/data', authRequired, async (_req, res) => {
   }
 });
 
-app.put('/api/data', authRequired, async (req, res) => {
+function mergeServerOwned(serverItems = [], clientItems = [], isOwned) {
+  const clientIds = new Set((clientItems || []).map((item) => item?.id).filter(Boolean));
+  const extra = (serverItems || []).filter((item) => item?.id && isOwned(item) && !clientIds.has(item.id));
+  return extra.length ? [...(clientItems || []), ...extra] : clientItems || [];
+}
+
+function mergeInboundCommunications(serverItems = [], clientItems = []) {
+  const isOwned = (item) =>
+    Boolean(item?.externalId) ||
+    String(item?.id || '').startsWith('cm-imap-') ||
+    String(item?.id || '').startsWith('act-imap-');
+  const serverOwned = new Map((serverItems || []).filter(isOwned).map((item) => [item.id, item]));
+  const merged = (clientItems || []).map((item) => {
+    const server = serverOwned.get(item.id);
+    if (!server) return item;
+    return {
+      ...item,
+      ...server,
+      readAt: item.readAt || server.readAt,
+      handledAs: item.handledAs || server.handledAs,
+    };
+  });
+  const seen = new Set(merged.map((item) => item.id));
+  const extra = [...serverOwned.values()].filter((item) => !seen.has(item.id));
+  return extra.length ? [...merged, ...extra] : merged;
+}
+
+function mergeCustomersKeepInbox(serverCustomers = [], clientCustomers = []) {
+  const serverById = new Map((serverCustomers || []).map((c) => [c.id, c]));
+  return (clientCustomers || []).map((client) => {
+    const server = serverById.get(client.id);
+    if (!server) return client;
+    if (server.lastContact === 'Email · reply' && client.lastContact !== 'Email · reply') {
+      return {
+        ...client,
+        lastContact: server.lastContact,
+        collectionStage: server.collectionStage || client.collectionStage,
+      };
+    }
+    return client;
+  });
+}
+
+app.put('/api/data', authRequired, requirePermission(...WRITE_PERMISSIONS), async (req, res) => {
   try {
     const body = req.body && typeof req.body === 'object' ? req.body : {};
     if (!Array.isArray(body.companies)) {
       return res.status(400).json({ ok: false, error: 'Invalid payload: companies must be an array.' });
     }
+    const current = await readAppStore();
+    if (body.revision != null && Number(body.revision) !== Number(current.revision || 0)) {
+      return res.status(409).json({
+        ok: false,
+        stale: true,
+        error: 'This workspace was updated in another session. Reloaded the latest data.',
+        data: current,
+      });
+    }
     const saved = await writeAppStore({
       companies: body.companies || [],
       companyId: String(body.companyId || ''),
-      customers: Array.isArray(body.customers) ? body.customers : [],
+      customers: mergeById(
+        current.customers,
+        mergeCustomersKeepInbox(current.customers, Array.isArray(body.customers) ? body.customers : []),
+        preferCustomer,
+      ),
       recoveries: Array.isArray(body.recoveries) ? body.recoveries : [],
       imports: Array.isArray(body.imports) ? body.imports : [],
       templates: Array.isArray(body.templates) ? body.templates : [],
       equipment: Array.isArray(body.equipment) ? body.equipment : [],
-      promises: Array.isArray(body.promises) ? body.promises : [],
+      promises: mergeById(current.promises, Array.isArray(body.promises) ? body.promises : [], preferPromise, {
+        keepServerOnly: true,
+      }),
       payments: Array.isArray(body.payments) ? body.payments : [],
-      communications: Array.isArray(body.communications) ? body.communications : [],
+      communications: mergeInboundCommunications(
+        current.communications,
+        Array.isArray(body.communications) ? body.communications : [],
+      ),
       notes: Array.isArray(body.notes) ? body.notes : [],
       followUps: Array.isArray(body.followUps) ? body.followUps : [],
-      activities: Array.isArray(body.activities) ? body.activities : [],
+      activities: mergeInboundCommunications(
+        current.activities,
+        Array.isArray(body.activities) ? body.activities : [],
+      ),
+      integrations: Array.isArray(body.integrations) ? body.integrations : [],
+      automationRules: Array.isArray(body.automationRules) ? body.automationRules : [],
+      importMappings: body.importMappings && typeof body.importMappings === 'object' ? body.importMappings : current.importMappings || {},
+      promiseEmailSeeded: Boolean(current.promiseEmailSeeded || body.promiseEmailSeeded),
+      revision: Number(current.revision || 0),
     });
-    return res.json({ ok: true, data: saved });
+    return res.json({ ok: true, data: saved, revision: saved.revision });
   } catch (error) {
     const message = error instanceof Error ? error.message : 'Unable to save app data.';
     console.error('[data]', message);
@@ -338,11 +504,28 @@ app.post('/api/auth/login', async (req, res) => {
       return res.status(400).json({ ok: false, error: 'Email and password are required.' });
     }
 
+    const limitKey = `${req.ip || 'local'}:${email}`;
+    const limit = checkRateLimit(limitKey);
+    if (!limit.ok) {
+      res.setHeader('Retry-After', String(limit.retryAfter));
+      return res.status(429).json({
+        ok: false,
+        error: `Too many sign-in attempts. Try again in ${Math.ceil(limit.retryAfter / 60)} minutes.`,
+      });
+    }
+
     const user = users.find((u) => u.email === email && u.active);
-    if (!user) return res.status(401).json({ ok: false, error: 'Invalid email or password.' });
+    if (!user) {
+      recordFailure(limitKey);
+      return res.status(401).json({ ok: false, error: 'The email or password is incorrect.' });
+    }
 
     const valid = await bcrypt.compare(password, user.passwordHash);
-    if (!valid) return res.status(401).json({ ok: false, error: 'Invalid email or password.' });
+    if (!valid) {
+      recordFailure(limitKey);
+      return res.status(401).json({ ok: false, error: 'The email or password is incorrect.' });
+    }
+    recordSuccess(limitKey);
 
     const pub = publicUser(user);
     const token = signToken(user);
@@ -354,12 +537,95 @@ app.post('/api/auth/login', async (req, res) => {
   }
 });
 
+function hashResetToken(token) {
+  return createHash('sha256').update(token).digest('hex');
+}
+
+function publicAppOrigin(req) {
+  const configured = String(process.env.APP_PUBLIC_URL || process.env.ALLOWED_ORIGIN || '')
+    .split(',')[0]
+    .trim();
+  if (configured) return configured.replace(/\/$/, '');
+  const origin = String(req.headers.origin || '').trim();
+  if (origin) return origin.replace(/\/$/, '');
+  return `http://127.0.0.1:${process.env.VITE_DEV_PORT || 5173}`;
+}
+
+app.post('/api/auth/forgot-password', async (req, res) => {
+  const generic = { ok: true, message: 'If that email is on this workspace, reset instructions were sent.' };
+  try {
+    const email = String(req.body?.email || '')
+      .trim()
+      .toLowerCase();
+    if (!email || !email.includes('@')) return res.json(generic);
+
+    const user = users.find((u) => u.email === email && u.active);
+    if (!user) return res.json(generic);
+
+    const token = randomBytes(32).toString('hex');
+    resetTokens = resetTokens.filter((item) => item.userId !== user.id && item.expiresAt > Date.now());
+    resetTokens.push({
+      tokenHash: hashResetToken(token),
+      userId: user.id,
+      expiresAt: Date.now() + 30 * 60 * 1000,
+    });
+    void persistAuth();
+
+    const resetUrl = `${publicAppOrigin(req)}/login?reset=${token}`;
+    if (smtpConfigured()) {
+      const smtp = smtpSettings();
+      await createTransport().sendMail({
+        from: `"${smtp.fromName}" <${smtp.from}>`,
+        to: user.email,
+        subject: 'Collections Hub password reset',
+        text: `Reset your Collections Hub password using this link (valid for 30 minutes):\n\n${resetUrl}\n\nIf you did not ask for this, you can ignore the email.`,
+      });
+    } else if (!isProductionLike()) {
+      console.log('[auth] password reset link (dev only):', resetUrl);
+    }
+    return res.json(generic);
+  } catch (error) {
+    console.error('[auth] forgot-password', error instanceof Error ? error.message : error);
+    return res.json(generic);
+  }
+});
+
+app.post('/api/auth/reset-password', async (req, res) => {
+  try {
+    const token = String(req.body?.token || '').trim();
+    const password = String(req.body?.password || '');
+    if (!token || password.length < 8) {
+      return res.status(400).json({ ok: false, error: 'Enter a new password of at least 8 characters.' });
+    }
+    const tokenHash = hashResetToken(token);
+    const now = Date.now();
+    resetTokens = resetTokens.filter((item) => item.expiresAt > now);
+    const found = resetTokens.find((item) => item.tokenHash === tokenHash);
+    if (!found) {
+      return res.status(400).json({ ok: false, error: 'This reset link is invalid or has expired. Request a new one.' });
+    }
+    const user = users.find((u) => u.id === found.userId && u.active);
+    if (!user) {
+      return res.status(400).json({ ok: false, error: 'This reset link is invalid or has expired. Request a new one.' });
+    }
+    user.passwordHash = await bcrypt.hash(password, 10);
+    users = users.map((item) => (item.id === user.id ? user : item));
+    resetTokens = resetTokens.filter((item) => item.tokenHash !== tokenHash);
+    void persistAuth();
+    return res.json({ ok: true });
+  } catch (error) {
+    const message = error instanceof Error ? error.message : 'Unable to reset password.';
+    return res.status(500).json({ ok: false, error: message });
+  }
+});
+
 app.get('/api/auth/me', authRequired, (req, res) => {
   res.json({ ok: true, user: req.user });
 });
 
 app.post('/api/auth/logout', authRequired, (req, res) => {
   revokedTokens.add(req.token);
+  void persistAuth();
   return res.json({ ok: true });
 });
 
@@ -519,7 +785,7 @@ app.post('/api/mail/send', authRequired, requirePermission('communications.send'
       });
     }
 
-    const { to, subject, text, html, customerName, accountNo } = req.body || {};
+    const { to, subject, text, html, customerName, accountNo, inReplyTo, references } = req.body || {};
     const recipient = String(to || '').trim();
     const mailSubject = String(subject || '').trim();
     const bodyText = String(text || html || '').trim();
@@ -531,17 +797,20 @@ app.post('/api/mail/send', authRequired, requirePermission('communications.send'
     if (!bodyText) return res.status(400).json({ ok: false, error: 'Message body is required.' });
 
     const transporter = createTransport();
+    const smtp = smtpSettings();
+    const headers = {};
+    if (customerName) headers['X-Collections-Customer'] = String(customerName);
+    if (accountNo) headers['X-Collections-Account'] = String(accountNo);
     const info = await transporter.sendMail({
       from: `"${smtp.fromName}" <${smtp.from}>`,
+      replyTo: smtp.replyTo || smtp.from,
       to: recipient,
       subject: mailSubject,
       text: bodyText,
       html: html ? String(html) : undefined,
-      headers: {
-        'X-Collections-Customer': customerName ? String(customerName) : '',
-        'X-Collections-Account': accountNo ? String(accountNo) : '',
-        'X-Collections-Sent-By': req.user?.email || '',
-      },
+      inReplyTo: inReplyTo ? String(inReplyTo) : undefined,
+      references: references ? String(references) : undefined,
+      headers,
     });
 
     return res.json({
@@ -558,6 +827,14 @@ app.post('/api/mail/send', authRequired, requirePermission('communications.send'
   }
 });
 
+app.post('/api/mail/inbox/sync', authRequired, requirePermission('communications.send', 'customers.view', 'collections.manage'), async (_req, res) => {
+  const result = await syncImapInbox();
+  if (!result.ok) {
+    return res.status(result.error?.includes('not configured') ? 503 : 500).json(result);
+  }
+  return res.json(result);
+});
+
 app.post('/api/whatsapp/send', authRequired, requirePermission('communications.send'), async (req, res) => {
   try {
     if (!twilioConfigured()) {
@@ -567,9 +844,10 @@ app.post('/api/whatsapp/send', authRequired, requirePermission('communications.s
       });
     }
 
-    const { to, message, from, customerName, accountNo } = req.body || {};
+    const { to, message, customerName, accountNo, contentSid: requestSid, contentVariables } = req.body || {};
     const bodyText = String(message || '').trim();
-    if (!bodyText) return res.status(400).json({ ok: false, error: 'Message body is required.' });
+    const contentSid = String(requestSid || twilioConfig.contentSid || '').trim();
+    if (!bodyText && !contentSid) return res.status(400).json({ ok: false, error: 'Message body is required.' });
 
     const toAddress = toWhatsAppAddress(to);
     if (!toAddress) {
@@ -580,7 +858,6 @@ app.post('/api/whatsapp/send', authRequired, requirePermission('communications.s
     }
 
     const fromAddress =
-      toWhatsAppAddress(from) ||
       toWhatsAppAddress(twilioConfig.from) ||
       (String(twilioConfig.from || '').toLowerCase().startsWith('whatsapp:')
         ? String(twilioConfig.from).trim()
@@ -594,11 +871,21 @@ app.post('/api/whatsapp/send', authRequired, requirePermission('communications.s
     }
 
     const client = createTwilioClient();
-    const result = await client.messages.create({
-      from: fromAddress,
-      to: toAddress,
-      body: bodyText,
-    });
+    const payload = contentSid
+      ? {
+          contentSid,
+          from: fromAddress,
+          to: toAddress,
+          ...(contentVariables && typeof contentVariables === 'object'
+            ? { contentVariables: JSON.stringify(contentVariables) }
+            : {}),
+        }
+      : {
+          body: bodyText,
+          from: fromAddress,
+          to: toAddress,
+        };
+    const result = await client.messages.create(payload);
 
     console.log(
       `[whatsapp] sid=${result.sid} to=${toAddress} status=${result.status}` +
@@ -614,9 +901,20 @@ app.post('/api/whatsapp/send', authRequired, requirePermission('communications.s
       from: fromAddress,
     });
   } catch (error) {
-    const message = error instanceof Error ? error.message : 'Unable to send WhatsApp message.';
-    console.error('[whatsapp]', message);
-    return res.status(500).json({ ok: false, error: message });
+    const code = error?.code;
+    const raw = error instanceof Error ? error.message : 'Unable to send WhatsApp message.';
+    const message =
+      code === 20003 || raw === 'Authenticate'
+        ? 'Twilio rejected the Account SID or Auth Token. Copy the Auth Token again from the Twilio console into TWILIO_AUTH_TOKEN, then restart npm run dev.'
+        : code === 21654 || code === 21655
+          ? 'Twilio trial WhatsApp requires a template. Open Messaging → Try out WhatsApp, copy the ContentSid (starts with HX) from the code sample into TWILIO_CONTENT_SID, then restart npm run dev.'
+          : code === 63016 || code === 63007
+          ? 'This WhatsApp number has not joined the Twilio trial sender. Ask the recipient to send join twilio-trial to +1 737 221 2163.'
+          : code
+            ? `${raw} (Twilio ${code})`
+            : raw;
+    console.error('[whatsapp]', code || '', raw);
+    return res.status(code === 20003 ? 401 : 500).json({ ok: false, error: message });
   }
 });
 
@@ -638,10 +936,18 @@ async function start() {
       permissions = authFromDb.permissions;
       roles = authFromDb.roles;
       users = authFromDb.users;
-      console.log('[db] loaded users/roles/permissions from PostgreSQL');
-    } else if (isUsingDatabase()) {
-      await saveAuthTables({ permissions, roles, users });
-      console.log('[db] seeded users/roles/permissions into PostgreSQL');
+      for (const item of authFromDb.revokedTokens || []) {
+        if (item?.token) revokedTokens.add(item.token);
+      }
+      resetTokens = Array.isArray(authFromDb.resetTokens) ? authFromDb.resetTokens : [];
+      console.log(`[db] loaded users/roles/permissions (${isUsingDatabase() ? 'PostgreSQL' : 'file'})`);
+      if (ensureSystemAuth()) {
+        await persistAuth();
+        console.log('[db] synced system permissions onto existing roles');
+      }
+    } else {
+      await saveAuthTables({ permissions, roles, users, revokedTokens: [], resetTokens: [] });
+      console.log(`[db] seeded users/roles/permissions (${isUsingDatabase() ? 'PostgreSQL' : 'file'})`);
     }
   } catch (error) {
     console.error('[db] startup failed:', error instanceof Error ? error.message : error);
@@ -664,6 +970,7 @@ async function start() {
   server.on('listening', () => {
     console.log(`[server] listening on http://localhost:${PORT}`);
     console.log(`[auth] admin login → ${adminEmail}`);
+    console.log('[auth] JWT_SECRET is set');
     console.log(`[rbac] ${roles.length} roles · ${permissions.length} permissions`);
     console.log(`[db] mode → ${isUsingDatabase() ? 'PostgreSQL' : 'JSON file fallback'}`);
     if (twilioConfigured()) {
@@ -673,17 +980,43 @@ async function start() {
     }
     if (!smtpConfigured()) {
       console.log('[mailer] smtp NOT configured — set SMTP_* in .env');
-      return;
+    } else {
+      const smtp = smtpSettings();
+      console.log(`[mailer] smtp target ${smtp.host}:${smtp.port} as ${smtp.from}`);
+      createTransport()
+        .verify()
+        .then(() => console.log('[mailer] smtp credentials verified'))
+        .catch((error) => {
+          const message = error instanceof Error ? error.message : String(error);
+          console.error('[mailer] smtp verify failed:', message);
+        });
     }
-    console.log(`[mailer] smtp target ${smtp.host}:${smtp.port} as ${smtp.from}`);
-    createTransport()
-      .verify()
-      .then(() => console.log('[mailer] smtp credentials verified'))
-      .catch((error) => {
-        const message = error instanceof Error ? error.message : String(error);
-        console.error('[mailer] smtp verify failed:', message);
-      });
+    startImapPolling();
+    startCollectionsJobs();
   });
+
+function startCollectionsJobs() {
+  const ms = Math.max(60, Number(process.env.COLLECTIONS_JOB_SECONDS || 120)) * 1000;
+  const run = async () => {
+    try {
+      const store = await readAppStore();
+      const result = runCollectionsJobs(store);
+      if (result.promisesCreated || result.promisesBroken || result.seeded) {
+        await writeAppStore({ ...result.store, revision: Number(result.store.revision || 0) });
+        if (result.promisesCreated || result.promisesBroken) {
+          console.log(
+            `[jobs] email promises ${result.promisesCreated} · overdue broken ${result.promisesBroken}`,
+          );
+        }
+      }
+    } catch (error) {
+      console.error('[jobs]', error instanceof Error ? error.message : error);
+    }
+  };
+  setTimeout(run, 8000);
+  setInterval(run, ms);
+  console.log(`[jobs] collections jobs every ${ms / 1000}s (email PTP + overdue promises)`);
+}
 
   server.ref();
 }

@@ -21,6 +21,7 @@ import {
   CalendarClock,
   Edit,
   ExternalLink,
+  Inbox,
   Mail,
   MapPin,
   MessageCircle,
@@ -28,12 +29,13 @@ import {
   NotebookPen,
   Phone,
   Plus,
+  Reply,
   Truck,
   Wrench,
 } from 'lucide-react';
-import { useNavigate, useParams } from 'react-router-dom';
+import { useNavigate, useParams, useSearchParams } from 'react-router-dom';
 import { ConfirmModal, MoreActionsMenu } from '../components/CustomerTable';
-import { EmptyState, Info } from '../components/ui';
+import { EmptyState, Info, EmailThreadPreview } from '../components/ui';
 import { useApp } from '../context/AppContext';
 import {
   AddNoteModal,
@@ -45,16 +47,20 @@ import {
   ScheduleFollowUpModal,
 } from '../modals/ActionModals';
 import { CustomerFormModal, MarkPaidModal, PromiseToPayModal, SendMessageModal } from '../modals/CoreModals';
-import type { Equipment, NoteType } from '../types';
+import type { Communication, Equipment, NoteType } from '../types';
 import {
+  amountClass,
   daysOverdue,
   fullAddress,
   initials,
   money,
+  normalizeTab,
   recoveryColor,
   safeDate,
   safeDateTime,
   statusColor,
+  isUnreadCommunication,
+  communicationCardClass,
 } from '../utils';
 
 type ModalKey =
@@ -72,9 +78,22 @@ type ModalKey =
   | 'archive'
   | null;
 
+const CUSTOMER_TABS = [
+  'overview',
+  'communications',
+  'collections',
+  'promises',
+  'payments',
+  'equipment',
+  'recovery',
+  'notes',
+  'activity',
+] as const;
+
 export default function CustomerDetails() {
   const { customerId } = useParams();
   const navigate = useNavigate();
+  const [searchParams, setSearchParams] = useSearchParams();
   const {
     getCustomer,
     getCompany,
@@ -92,6 +111,8 @@ export default function CustomerDetails() {
     switchCompany,
     companyId,
     loading,
+    syncInbox,
+    markCommunicationRead,
   } = useApp();
 
   const customer = getCustomer(customerId || '');
@@ -105,6 +126,21 @@ export default function CustomerDetails() {
   const [completeJobId, setCompleteJobId] = useState<string | null>(null);
   const [noteFilter, setNoteFilter] = useState<string | null>('All');
   const [expandedComm, setExpandedComm] = useState<string | null>(null);
+  const [checkingInbox, setCheckingInbox] = useState(false);
+  const [replyComm, setReplyComm] = useState<Communication | null>(null);
+  const tab = normalizeTab(searchParams.get('tab'), CUSTOMER_TABS, 'overview');
+
+  function setTab(value: string | null) {
+    const next = normalizeTab(value, CUSTOMER_TABS, 'overview');
+    const params = new URLSearchParams(searchParams);
+    params.set('tab', next);
+    setSearchParams(params, { replace: true });
+  }
+
+  function openMessage(reply?: Communication | null) {
+    setReplyComm(reply || null);
+    setModal('message');
+  }
 
   const equipment = companyEquipment(customer?.id);
   const promises = companyPromises(customer?.id);
@@ -114,6 +150,7 @@ export default function CustomerDetails() {
   const followUps = companyFollowUps(customer?.id);
   const activities = companyActivities(customer?.id);
   const recoveries = companyRecoveries.filter((r) => r.customerId === customer?.id);
+  const unreadCount = communications.filter(isUnreadCommunication).length;
 
   const filteredNotes = useMemo(() => {
     const list = [...notes].sort((a, b) => Number(b.pinned) - Number(a.pinned) || b.createdAt.localeCompare(a.createdAt));
@@ -157,7 +194,7 @@ export default function CustomerDetails() {
                 {customer.accountNo} · {company?.name || 'Company'}
               </div>
               <div className="customer-detail-meta">
-                <span className="customer-detail-balance">{money(customer.outstanding)}</span>
+                <span className={`customer-detail-balance ${amountClass(customer.outstanding)}`}>{money(customer.outstanding)}</span>
                 <span className={overdue > 0 ? 'customer-detail-overdue' : 'customer-detail-muted'}>
                   {overdue} days overdue
                 </span>
@@ -169,8 +206,8 @@ export default function CustomerDetails() {
           </div>
 
           <div className="customer-detail-actions-desktop">
-            <Button size="compact-sm" variant="light" color="green" leftSection={<MessageCircle size={14} />} onClick={() => setModal('message')}>
-              Message
+            <Button size="compact-sm" variant="light" color="blue" leftSection={<Mail size={14} />} onClick={() => openMessage()}>
+              Email
             </Button>
             <Button size="compact-sm" variant="light" leftSection={<Phone size={14} />} onClick={() => setModal('call')}>
               Call
@@ -195,8 +232,8 @@ export default function CustomerDetails() {
         </div>
 
         <div className="customer-detail-actions-bar">
-          <Button size="compact-sm" variant="light" color="green" leftSection={<MessageCircle size={14} />} onClick={() => setModal('message')}>
-            Send Message
+          <Button size="compact-sm" variant="light" color="blue" leftSection={<Mail size={14} />} onClick={() => openMessage()}>
+            Send Email
           </Button>
           <Button size="compact-sm" variant="light" leftSection={<Phone size={14} />} onClick={() => setModal('call')}>
             Log Call
@@ -233,8 +270,8 @@ export default function CustomerDetails() {
               </Button>
             </Menu.Target>
             <Menu.Dropdown>
-              <Menu.Item leftSection={<MessageCircle size={14} />} onClick={() => setModal('message')}>
-                Send Message
+              <Menu.Item leftSection={<Mail size={14} />} onClick={() => openMessage()}>
+                Send Email
               </Menu.Item>
               <Menu.Item leftSection={<Phone size={14} />} onClick={() => setModal('call')}>
                 Log Call
@@ -269,10 +306,21 @@ export default function CustomerDetails() {
         </div>
       </div>
 
-      <Tabs defaultValue="overview" className="detail-tabs">
+      <Tabs value={tab} onChange={setTab} className="detail-tabs">
         <Tabs.List className="tabs-scroll">
           <Tabs.Tab value="overview">Overview</Tabs.Tab>
-          <Tabs.Tab value="communications">Communications</Tabs.Tab>
+          <Tabs.Tab
+            value="communications"
+            rightSection={
+              unreadCount > 0 ? (
+                <Badge size="xs" color="orange" variant="filled" circle>
+                  {unreadCount}
+                </Badge>
+              ) : undefined
+            }
+          >
+            Communications
+          </Tabs.Tab>
           <Tabs.Tab value="collections">Collections</Tabs.Tab>
           <Tabs.Tab value="promises">Promises</Tabs.Tab>
           <Tabs.Tab value="payments">Payments</Tabs.Tab>
@@ -312,7 +360,7 @@ export default function CustomerDetails() {
                 </Group>
                 <Group justify="space-between">
                   <Info label="WhatsApp" value={customer.whatsapp || customer.phone || '—'} icon={MessageCircle} />
-                  <ActionIcon variant="light" color="green" onClick={() => setModal('message')} aria-label="Send WhatsApp">
+                  <ActionIcon variant="light" color="blue" onClick={() => openMessage()} aria-label="Send Email">
                     <MessageCircle size={14} />
                   </ActionIcon>
                 </Group>
@@ -403,44 +451,95 @@ export default function CustomerDetails() {
 
         <Tabs.Panel value="communications" pt="md">
           <Card className="card" radius="lg" p="lg">
+            <Group justify="space-between" mb="sm">
+              <Text size="sm" fw={700}>
+                Timeline
+              </Text>
+              <Button
+                size="xs"
+                variant="light"
+                leftSection={<Inbox size={14} />}
+                loading={checkingInbox}
+                onClick={async () => {
+                  setCheckingInbox(true);
+                  await syncInbox();
+                  setCheckingInbox(false);
+                }}
+              >
+                Check inbox
+              </Button>
+            </Group>
             <Stack gap="sm">
-              {communications.map((c) => (
-                <button
+              {communications.map((c) => {
+                const unread = isUnreadCommunication(c);
+                return (
+                <div
                   key={c.id}
-                  type="button"
-                  className="timeline-item"
-                  onClick={() => setExpandedComm(expandedComm === c.id ? null : c.id)}
+                  className={communicationCardClass(c)}
+                  onClick={() => {
+                    markCommunicationRead(c.id);
+                    setExpandedComm(expandedComm === c.id ? null : c.id);
+                  }}
                 >
                   <Group justify="space-between" wrap="wrap">
                     <Group gap={8}>
-                      <ThemeIcon size="sm" variant="light" color={c.channel === 'WhatsApp' ? 'green' : c.channel === 'Email' ? 'blue' : c.channel === 'Phone' ? 'indigo' : 'gray'}>
+                      <ThemeIcon size="sm" variant="light" color={c.direction === 'Incoming' ? (unread ? 'orange' : 'teal') : c.channel === 'WhatsApp' ? 'green' : c.channel === 'Email' ? 'blue' : c.channel === 'Phone' ? 'indigo' : 'gray'}>
                         {c.channel === 'Email' ? <Mail size={12} /> : c.channel === 'Phone' ? <Phone size={12} /> : <MessageCircle size={12} />}
                       </ThemeIcon>
                       <Text size="xs" fw={700}>
                         {c.channel} · {c.direction}
                       </Text>
+                      {unread ? (
+                        <Badge size="xs" color="orange" variant="filled">
+                          New
+                        </Badge>
+                      ) : null}
                     </Group>
                     <Text size="10px" c="dimmed">
                       {safeDateTime(c.createdAt)}
                     </Text>
                   </Group>
-                  <Text size="xs" mt={6} lineClamp={expandedComm === c.id ? undefined : 2}>
-                    {c.subject ? `${c.subject} — ` : ''}
-                    {c.message}
-                  </Text>
-                  <Group gap="xs" mt={6}>
-                    <Badge size="xs" variant="light">
-                      {c.status}
-                    </Badge>
-                    <Text size="10px" c="dimmed">
-                      {c.createdBy}
-                      {c.callResult ? ` · ${c.callResult}` : ''}
+                  {c.channel === 'Email' ? (
+                    <EmailThreadPreview
+                      subject={c.subject}
+                      message={c.message}
+                      expanded={expandedComm === c.id}
+                    />
+                  ) : (
+                    <Text size="xs" mt={6} lineClamp={expandedComm === c.id ? undefined : 2} style={{ whiteSpace: 'pre-wrap' }}>
+                      {c.message}
                     </Text>
+                  )}
+                  <Group gap="xs" mt={6} justify="space-between" wrap="nowrap">
+                    <Group gap="xs">
+                      <Badge size="xs" variant="light">
+                        {c.status}
+                      </Badge>
+                      <Text size="10px" c="dimmed">
+                        {c.direction === 'Incoming' ? customer.name : c.createdBy}
+                        {c.callResult ? ` · ${c.callResult}` : ''}
+                      </Text>
+                    </Group>
+                    {c.channel === 'Email' && (
+                      <Button
+                        size="compact-xs"
+                        variant="light"
+                        leftSection={<Reply size={12} />}
+                        onClick={(e) => {
+                          e.stopPropagation();
+                          markCommunicationRead(c.id);
+                          openMessage(c);
+                        }}
+                      >
+                        Reply
+                      </Button>
+                    )}
                   </Group>
-                </button>
-              ))}
+                </div>
+                );
+              })}
               {communications.length === 0 && (
-                <EmptyState title="No messages yet" description="Send a WhatsApp/email or log a phone call to start the timeline." action={<Button size="xs" onClick={() => setModal('message')}>Send Message</Button>} />
+                <EmptyState title="No messages yet" description="Send a WhatsApp/email or log a phone call to start the timeline." action={<Button size="xs" onClick={() => openMessage()}>Send Message</Button>} />
               )}
             </Stack>
           </Card>
@@ -510,7 +609,10 @@ export default function CustomerDetails() {
                         </Badge>
                       </Table.Td>
                       <Table.Td>{p.customerComment || p.internalNote || '—'}</Table.Td>
-                      <Table.Td>{p.outcome || '—'}</Table.Td>
+                      <Table.Td>
+                        {p.outcome ||
+                          (p.status === 'Pending' ? 'Awaiting payment' : p.status === 'Kept' ? 'Paid' : p.status)}
+                      </Table.Td>
                     </Table.Tr>
                   ))}
                 </Table.Tbody>
@@ -773,7 +875,16 @@ export default function CustomerDetails() {
       </Tabs>
 
       <CustomerFormModal opened={modal === 'edit'} onClose={() => setModal(null)} customer={customer} companyId={customer.companyId} />
-      <SendMessageModal opened={modal === 'message'} onClose={() => setModal(null)} customer={customer} />
+      <SendMessageModal
+        opened={modal === 'message'}
+        onClose={() => {
+          setModal(null);
+          setReplyComm(null);
+        }}
+        customer={customer}
+        defaultChannel="Email"
+        replyTo={replyComm}
+      />
       <LogCallModal opened={modal === 'call'} onClose={() => setModal(null)} customer={customer} />
       <PromiseToPayModal opened={modal === 'promise'} onClose={() => setModal(null)} customer={customer} />
       <MarkPaidModal opened={modal === 'payment'} onClose={() => setModal(null)} customer={customer} />

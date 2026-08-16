@@ -1,6 +1,6 @@
-# Collections Hub Mini
+# Collections Hub
 
-A responsive multi-company collections and ISP equipment-recovery application.
+A responsive multi-company collections, communication automation and ISP equipment-recovery application.
 
 ## What this version includes
 
@@ -12,6 +12,9 @@ A responsive multi-company collections and ISP equipment-recovery application.
 - Promises to pay, payments, follow-ups, notes and activity audit trail
 - Equipment inventory and recovery job workflow
 - Message templates and company settings
+- Splynx, Xero, Sage, Excel, WhatsApp and email connection workspace
+- Company-scoped automation rules with approval protection
+- Synchronisation health, manual sync controls and safe action guidance
 - Toast notifications, confirmation modals, empty states and mobile-responsive layouts
 
 ## Core workflow
@@ -75,8 +78,10 @@ npm run preview
 | `/imports` | Excel imports |
 | `/templates` | Message templates |
 | `/communications` | Communication centre |
+| `/automations` | Collection workflow rules |
+| `/integrations` | Splynx, Xero, Sage and communication connectors |
 | `/settings` | Company settings |
 
 ## MVP notes
 
-Domain data (companies/customers) persists in the browser for the local MVP and in-memory on the API for auth/RBAC/mail. Spreadsheet parsing runs in the browser. Production secrets stay in server `.env` only.
+Domain data is shared through the API with PostgreSQL support and a local JSON fallback for development. The browser keeps a resilience cache. Spreadsheet parsing runs in the browser, while production secrets stay in server `.env` only. Connector cards provide configuration and health management; live third-party synchronisation requires credentials and API access from the chosen provider.

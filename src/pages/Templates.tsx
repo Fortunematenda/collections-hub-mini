@@ -15,9 +15,9 @@ export default function Templates() {
       id: uid('t'),
       companyId: company.id,
       name: 'New reminder',
-      channel: 'WhatsApp',
-      stage: 'Custom',
-      body: 'Hi {{name}}, ',
+      channel: 'Email',
+      stage: 'Payment Due',
+      body: 'Hi {{name}},\n\nOur records show account {{account_no}} has an outstanding balance of {{amount}}, due {{due_date}}.\n\nKind regards,\n{{company}} Collections',
     });
   }
 
@@ -68,7 +68,7 @@ export default function Templates() {
           <EmptyState
             icon={Mail}
             title={`No templates yet for ${company.name}`}
-            description="Create WhatsApp or email templates to speed up collections outreach."
+            description="Create email templates for first reminders, follow-ups and promise reminders. WhatsApp templates can wait until Twilio is upgraded."
             action={
               <Button size="xs" leftSection={<Plus size={14} />} onClick={createNew}>
                 New template
@@ -96,8 +96,8 @@ export default function Templates() {
             <Select
               label="Channel"
               value={edit.channel}
-              data={['WhatsApp', 'Email']}
-              onChange={(v) => setEdit({ ...edit, channel: (v || 'WhatsApp') as 'WhatsApp' | 'Email' })}
+              data={['Email', 'WhatsApp']}
+              onChange={(v) => setEdit({ ...edit, channel: (v || 'Email') as 'WhatsApp' | 'Email' })}
             />
             <TextInput
               label="Stage"

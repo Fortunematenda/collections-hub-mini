@@ -15,7 +15,7 @@ const promiseColor: Record<PromiseStatus, string> = {
 
 export default function Promises() {
   const navigate = useNavigate();
-  const { company, companyPromises, getCustomer } = useApp();
+  const { company, companyPromises, getCustomer, updatePromiseStatus } = useApp();
   const promises = companyPromises();
 
   return (
@@ -67,6 +67,24 @@ export default function Promises() {
               {p.customerComment && (
                 <Text size="xs" c="dimmed" mt="md">
                   “{p.customerComment}”
+                </Text>
+              )}
+              {p.status === 'Pending' && (
+                <Group mt="md" grow>
+                  <Button size="xs" color="teal" variant="light" onClick={() => updatePromiseStatus(p.id, 'Kept', 'Marked kept')}>
+                    Kept
+                  </Button>
+                  <Button size="xs" color="red" variant="light" onClick={() => updatePromiseStatus(p.id, 'Broken', 'Marked broken')}>
+                    Broken
+                  </Button>
+                  <Button size="xs" color="gray" variant="light" onClick={() => updatePromiseStatus(p.id, 'Cancelled', 'Cancelled')}>
+                    Cancel
+                  </Button>
+                </Group>
+              )}
+              {p.outcome && (
+                <Text size="xs" c="dimmed" mt="sm">
+                  Outcome: {p.outcome}
                 </Text>
               )}
               <Button

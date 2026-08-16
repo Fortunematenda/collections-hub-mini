@@ -4,7 +4,7 @@ import { Building2, Filter, MessagesSquare, Search } from 'lucide-react';
 import { useNavigate } from 'react-router-dom';
 import { EmptyState, PageHero } from '../components/ui';
 import { useApp } from '../context/AppContext';
-import { safeDateTime } from '../utils';
+import { splitEmailThread, safeDateTime, communicationCardClass, communicationRowClass } from '../utils';
 import type { CommChannel, CommDirection, CommStatus } from '../types';
 
 const channelColor: Record<CommChannel, string> = {
@@ -129,8 +129,9 @@ export default function Communications() {
                 return (
                   <Table.Tr
                     key={c.id}
+                    className={communicationRowClass(c)}
                     style={{ cursor: 'pointer' }}
-                    onClick={() => navigate('/customers/' + c.customerId)}
+                    onClick={() => navigate('/customers/' + c.customerId + '?tab=communications')}
                   >
                     <Table.Td>
                       <Text size="xs" c="dimmed">
@@ -159,10 +160,22 @@ export default function Communications() {
                       </Badge>
                     </Table.Td>
                     <Table.Td>
-                      <Text size="xs" lineClamp={2}>
-                        {c.subject ? `${c.subject} — ` : ''}
-                        {c.message}
-                      </Text>
+                      {c.channel === 'Email' ? (
+                        <div>
+                          {c.subject ? (
+                            <Text size="xs" fw={650}>
+                              {c.subject}
+                            </Text>
+                          ) : null}
+                          <Text size="xs" c="dimmed" lineClamp={2} mt={2} style={{ whiteSpace: 'pre-wrap' }}>
+                            {splitEmailThread(c.message).body}
+                          </Text>
+                        </div>
+                      ) : (
+                        <Text size="xs" lineClamp={2} style={{ whiteSpace: 'pre-wrap' }}>
+                          {c.message}
+                        </Text>
+                      )}
                     </Table.Td>
                   </Table.Tr>
                 );
@@ -176,7 +189,7 @@ export default function Communications() {
             const customer = getCustomer(c.customerId);
             return (
               <div
-                className="mobile-account-card"
+                className={`mobile-account-card ${communicationCardClass(c)}`}
                 key={c.id}
                 onClick={() => navigate('/customers/' + c.customerId)}
               >
@@ -197,8 +210,8 @@ export default function Communications() {
                   <span>{c.direction}</span>
                   <span>{c.status}</span>
                 </div>
-                <Text size="xs" c="dimmed" mt={8} lineClamp={3}>
-                  {c.message}
+                <Text size="xs" c="dimmed" mt={8} lineClamp={3} style={{ whiteSpace: 'pre-wrap' }}>
+                  {c.channel === 'Email' ? splitEmailThread(c.message).body : c.message}
                 </Text>
               </div>
             );

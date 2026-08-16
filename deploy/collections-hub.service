@@ -1,5 +1,5 @@
 [Unit]
-Description=Collections Hub Mini (API + UI)
+Description=Collections Hub (API + UI)
 After=network.target
 
 [Service]

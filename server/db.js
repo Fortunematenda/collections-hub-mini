@@ -6,6 +6,7 @@ import { fileURLToPath } from 'url';
 const { Pool } = pg;
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const FILE_FALLBACK = path.join(__dirname, 'data', 'app-store.json');
+const AUTH_FILE = path.join(__dirname, 'data', 'auth-store.json');
 
 /** @type {import('pg').Pool | null} */
 let pool = null;
@@ -26,6 +27,11 @@ export function emptyAppStore() {
     notes: [],
     followUps: [],
     activities: [],
+    integrations: [],
+    automationRules: [],
+    importMappings: {},
+    revision: 0,
+    promiseEmailSeeded: false,
   };
 }
 
@@ -181,7 +187,17 @@ export async function readAppStore() {
 }
 
 export async function writeAppStore(payload) {
-  const next = { ...emptyAppStore(), ...payload };
+  const current = usingDatabase && pool ? null : readFileStore();
+  let currentRevision = Number(payload.revision);
+  if (!Number.isFinite(currentRevision)) {
+    if (usingDatabase && pool) {
+      const result = await pool.query('SELECT payload FROM app_state WHERE id = 1');
+      currentRevision = Number(result.rows[0]?.payload?.revision || 0);
+    } else {
+      currentRevision = Number(current?.revision || 0);
+    }
+  }
+  const next = { ...emptyAppStore(), ...payload, revision: currentRevision + 1 };
   if (!usingDatabase || !pool) return writeFileStore(next);
 
   const client = await pool.connect();
@@ -228,14 +244,42 @@ export async function writeAppStore(payload) {
   }
 }
 
+function readAuthFile() {
+  try {
+    if (!existsSync(AUTH_FILE)) return null;
+    const parsed = JSON.parse(readFileSync(AUTH_FILE, 'utf8'));
+    return parsed && typeof parsed === 'object' ? parsed : null;
+  } catch (error) {
+    console.error('[db] auth file read failed:', error instanceof Error ? error.message : error);
+    return null;
+  }
+}
+
+function writeAuthFile(payload) {
+  const dir = path.dirname(AUTH_FILE);
+  if (!existsSync(dir)) mkdirSync(dir, { recursive: true });
+  writeFileSync(AUTH_FILE, JSON.stringify(payload, null, 2), 'utf8');
+}
+
 export async function loadAuthTables() {
-  if (!usingDatabase || !pool) return null;
+  if (!usingDatabase || !pool) {
+    const file = readAuthFile();
+    if (!file?.users?.length) return null;
+    return {
+      permissions: file.permissions || [],
+      roles: file.roles || [],
+      users: file.users || [],
+      revokedTokens: file.revokedTokens || [],
+      resetTokens: file.resetTokens || [],
+    };
+  }
   const [permissions, roles, users] = await Promise.all([
     pool.query('SELECT id, key, label, description, "group", system FROM permissions ORDER BY key'),
     pool.query('SELECT id, key, name, description, permission_ids, system FROM roles ORDER BY name'),
     pool.query('SELECT id, email, name, role_id, password_hash, active FROM users ORDER BY email'),
   ]);
   if (!permissions.rowCount && !roles.rowCount && !users.rowCount) return null;
+  const file = readAuthFile();
   return {
     permissions: permissions.rows.map((r) => ({
       id: r.id,
@@ -261,10 +305,14 @@ export async function loadAuthTables() {
       passwordHash: r.password_hash,
       active: r.active,
     })),
+    revokedTokens: file?.revokedTokens || [],
+    resetTokens: file?.resetTokens || [],
   };
 }
 
-export async function saveAuthTables({ permissions, roles, users }) {
+export async function saveAuthTables({ permissions, roles, users, revokedTokens = [], resetTokens = [] }) {
+  const filePayload = { permissions, roles, users, revokedTokens, resetTokens };
+  writeAuthFile(filePayload);
   if (!usingDatabase || !pool) return;
   const client = await pool.connect();
   try {

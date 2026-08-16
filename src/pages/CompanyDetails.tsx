@@ -24,26 +24,47 @@ import {
   MoreHorizontal,
   Phone,
   Plus,
+  Trash2,
   Truck,
   Users,
 } from 'lucide-react';
-import { useNavigate, useParams } from 'react-router-dom';
-import { ConfirmModal, CustomerTable } from '../components/CustomerTable';
-import { EmptyState, Info, Metric, PageHero } from '../components/ui';
+import { useNavigate, useParams, useSearchParams } from 'react-router-dom';
+import { ConfirmModal, CustomerTable, MoreActionsMenu } from '../components/CustomerTable';
+import { TablePager } from '../components/TablePager';
+import { EmptyState, EmailThreadPreview, Info, Metric, PageHero } from '../components/ui';
 import { useApp } from '../context/AppContext';
+import { useAuth } from '../context/AuthContext';
+import { useTablePaging } from '../hooks/useTablePaging';
+import type { ImportBatch } from '../types';
 import { CompanyFormModal, CustomerFormModal } from '../modals/CoreModals';
 import {
+  compareAccountNo,
   daysOverdue,
   initials,
   money,
+  normalizeTab,
   recoveryColor,
   safeDate,
   safeDateTime,
+  isUnreadCommunication,
+  communicationCardClass,
 } from '../utils';
+
+const COMPANY_TABS = [
+  'overview',
+  'customers',
+  'collections',
+  'promises',
+  'recovery',
+  'imports',
+  'communications',
+  'settings',
+] as const;
 
 export default function CompanyDetails() {
   const { companyId: routeId } = useParams();
   const navigate = useNavigate();
+  const [searchParams, setSearchParams] = useSearchParams();
   const {
     getCompany,
     customers,
@@ -56,19 +77,31 @@ export default function CompanyDetails() {
     switchCompany,
     companyId,
     archiveCompany,
+    deleteImport,
     loading,
   } = useApp();
+  const { user } = useAuth();
+  const isAdmin = user?.role === 'admin';
 
   const company = getCompany(routeId || '');
   const [editOpen, setEditOpen] = useState(false);
   const [archiveOpen, setArchiveOpen] = useState(false);
+  const [pendingImportDelete, setPendingImportDelete] = useState<ImportBatch | null>(null);
   const [addCustomerOpen, setAddCustomerOpen] = useState(false);
   const [search, setSearch] = useState('');
   const [statusFilter, setStatusFilter] = useState<string | null>('All statuses');
   const [balanceFilter, setBalanceFilter] = useState<string | null>('All balances');
   const [followFilter, setFollowFilter] = useState<string | null>('All follow-ups');
-  const [sortBy, setSortBy] = useState<string | null>('outstanding-desc');
+  const [sortBy, setSortBy] = useState<string | null>('id');
   const [commChannel, setCommChannel] = useState<string | null>('All channels');
+  const tab = normalizeTab(searchParams.get('tab'), COMPANY_TABS, 'overview');
+
+  function setTab(value: string | null) {
+    const next = normalizeTab(value, COMPANY_TABS, 'overview');
+    const params = new URLSearchParams(searchParams);
+    params.set('tab', next);
+    setSearchParams(params, { replace: true });
+  }
 
   const companyCustomers = useMemo(
     () => customers.filter((c) => c.companyId === company?.id && !c.archived),
@@ -95,6 +128,7 @@ export default function CompanyDetails() {
     if (balanceFilter === 'Cleared') list = list.filter((c) => c.outstanding <= 0);
     if (followFilter === 'Due soon') list = list.filter((c) => !!c.nextFollowUp);
     if (followFilter === 'No follow-up') list = list.filter((c) => !c.nextFollowUp);
+    if (sortBy === 'id') list.sort((a, b) => compareAccountNo(a.accountNo, b.accountNo));
     if (sortBy === 'outstanding-desc') list.sort((a, b) => b.outstanding - a.outstanding);
     if (sortBy === 'outstanding-asc') list.sort((a, b) => a.outstanding - b.outstanding);
     if (sortBy === 'name') list.sort((a, b) => a.name.localeCompare(b.name));
@@ -102,9 +136,11 @@ export default function CompanyDetails() {
     return list;
   }, [companyCustomers, search, statusFilter, balanceFilter, followFilter, sortBy]);
 
+  const customerPaging = useTablePaging(filteredCustomers, `${company?.id}:${search}:${statusFilter}:${balanceFilter}:${followFilter}:${sortBy}`);
   const collections = companyCustomers.filter((c) =>
     ['Payment Due', 'Follow-up', 'Unresponsive', 'Promise to Pay', 'Recovery Required'].includes(c.status),
   );
+  const collectionsPaging = useTablePaging(collections, `${company?.id}:collections`);
 
   const filteredComms = companyComms.filter((c) => !commChannel || commChannel === 'All channels' || c.channel === commChannel);
 
@@ -199,7 +235,7 @@ export default function CompanyDetails() {
         <Metric label="Equipment awaiting" value={String(awaitingEq)} foot="Recovery required" icon={Truck} />
       </div>
 
-      <Tabs defaultValue="overview" className="detail-tabs">
+      <Tabs value={tab} onChange={setTab} className="detail-tabs">
         <Tabs.List className="tabs-scroll">
           <Tabs.Tab value="overview">Overview</Tabs.Tab>
           <Tabs.Tab value="customers">Customers</Tabs.Tab>
@@ -299,7 +335,7 @@ export default function CompanyDetails() {
                 <Select className="status-filter" data={['All statuses', 'Payment Due', 'Follow-up', 'Promise to Pay', 'Paid', 'Unresponsive', 'Cancelled', 'Recovery Required']} value={statusFilter} onChange={setStatusFilter} />
                 <Select data={['All balances', 'Has balance', 'Cleared']} value={balanceFilter} onChange={setBalanceFilter} />
                 <Select data={['All follow-ups', 'Due soon', 'No follow-up']} value={followFilter} onChange={setFollowFilter} />
-                <Select data={[{ value: 'outstanding-desc', label: 'Highest balance' }, { value: 'outstanding-asc', label: 'Lowest balance' }, { value: 'name', label: 'Name' }, { value: 'overdue', label: 'Most overdue' }]} value={sortBy} onChange={setSortBy} />
+                <Select data={[{ value: 'id', label: 'Customer ID' }, { value: 'outstanding-desc', label: 'Highest balance' }, { value: 'outstanding-asc', label: 'Lowest balance' }, { value: 'name', label: 'Name' }, { value: 'overdue', label: 'Most overdue' }]} value={sortBy} onChange={setSortBy} />
               </div>
               <Group>
                 <Button variant="light" onClick={() => navigate('/imports')}>
@@ -311,10 +347,20 @@ export default function CompanyDetails() {
               </Group>
             </Group>
             <CustomerTable
-              customers={filteredCustomers}
+              customers={customerPaging.paged}
               onOpen={(c) => navigate(`/customers/${c.id}`)}
               emptyTitle="No customers for this company"
               emptyDescription="Add a customer or import an outstanding spreadsheet."
+            />
+            <TablePager
+              total={customerPaging.total}
+              from={customerPaging.from}
+              to={customerPaging.to}
+              page={customerPaging.page}
+              pageCount={customerPaging.pageCount}
+              pageSize={customerPaging.pageSize}
+              onPageChange={customerPaging.setPage}
+              onPageSizeChange={customerPaging.changePageSize}
             />
           </Card>
         </Tabs.Panel>
@@ -322,10 +368,20 @@ export default function CompanyDetails() {
         <Tabs.Panel value="collections" pt="md">
           <Card className="card" radius="lg" p="lg">
             <CustomerTable
-              customers={collections}
+              customers={collectionsPaging.paged}
               onOpen={(c) => navigate(`/customers/${c.id}`)}
               emptyTitle="No customers require follow-up right now."
               emptyDescription="When accounts become overdue they will appear in this collections list."
+            />
+            <TablePager
+              total={collectionsPaging.total}
+              from={collectionsPaging.from}
+              to={collectionsPaging.to}
+              page={collectionsPaging.page}
+              pageCount={collectionsPaging.pageCount}
+              pageSize={collectionsPaging.pageSize}
+              onPageChange={collectionsPaging.setPage}
+              onPageSizeChange={collectionsPaging.changePageSize}
             />
           </Card>
         </Tabs.Panel>
@@ -428,6 +484,7 @@ export default function CompanyDetails() {
                     <Table.Th>Cleared</Table.Th>
                     <Table.Th>Errors</Table.Th>
                     <Table.Th>Uploaded by</Table.Th>
+                    {isAdmin && <Table.Th />}
                   </Table.Tr>
                 </Table.Thead>
                 <Table.Tbody>
@@ -442,6 +499,20 @@ export default function CompanyDetails() {
                       <Table.Td>{i.cleared}</Table.Td>
                       <Table.Td>{i.errors}</Table.Td>
                       <Table.Td>{i.uploadedBy || '—'}</Table.Td>
+                      {isAdmin && (
+                        <Table.Td>
+                          <MoreActionsMenu
+                            items={[
+                              {
+                                label: 'Delete file',
+                                color: 'red',
+                                icon: <Trash2 size={14} />,
+                                onClick: () => setPendingImportDelete(i),
+                              },
+                            ]}
+                          />
+                        </Table.Td>
+                      )}
                     </Table.Tr>
                   ))}
                 </Table.Tbody>
@@ -458,16 +529,27 @@ export default function CompanyDetails() {
               {filteredComms.map((c) => {
                 const cust = customers.find((x) => x.id === c.customerId);
                 return (
-                  <div key={c.id} className="timeline-item" onClick={() => navigate(`/customers/${c.customerId}`)} style={{ cursor: 'pointer' }}>
+                  <div key={c.id} className={communicationCardClass(c)} onClick={() => navigate(`/customers/${c.customerId}?tab=communications`)} style={{ cursor: 'pointer' }}>
+                    <Group gap={6}>
                     <Badge size="xs" variant="light">
                       {c.channel}
                     </Badge>
+                    {isUnreadCommunication(c) ? (
+                      <Badge size="xs" color="orange" variant="filled">
+                        New
+                      </Badge>
+                    ) : null}
+                    </Group>
                     <Text size="xs" fw={650} mt={4}>
                       {cust?.name || 'Customer'} · {c.direction}
                     </Text>
-                    <Text size="xs" c="dimmed" lineClamp={2} mt={4}>
-                      {c.message}
-                    </Text>
+                    {c.channel === 'Email' ? (
+                      <EmailThreadPreview subject={c.subject} message={c.message} compact />
+                    ) : (
+                      <Text size="xs" c="dimmed" lineClamp={2} mt={4} style={{ whiteSpace: 'pre-wrap' }}>
+                        {c.message}
+                      </Text>
+                    )}
                     <Text size="10px" c="dimmed" mt={4}>
                       {safeDateTime(c.createdAt)} · {c.status}
                     </Text>
@@ -500,6 +582,17 @@ export default function CompanyDetails() {
 
       <CompanyFormModal opened={editOpen} onClose={() => setEditOpen(false)} company={company} />
       <CustomerFormModal opened={addCustomerOpen} onClose={() => setAddCustomerOpen(false)} companyId={company.id} />
+      <ConfirmModal
+        opened={!!pendingImportDelete}
+        onClose={() => setPendingImportDelete(null)}
+        title="Delete imported file"
+        message={`Remove ${pendingImportDelete?.file || 'this import'} from history? Customer accounts created or updated by this file will stay in place.`}
+        confirmLabel="Delete file"
+        onConfirm={() => {
+          if (pendingImportDelete) deleteImport(pendingImportDelete.id);
+          setPendingImportDelete(null);
+        }}
+      />
       <ConfirmModal
         opened={archiveOpen}
         onClose={() => setArchiveOpen(false)}

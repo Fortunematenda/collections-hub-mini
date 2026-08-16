@@ -1,7 +1,7 @@
-import { ActionIcon, Badge, Button, Group, Menu, Modal, Stack, Text } from '@mantine/core';
+import { ActionIcon, Badge, Button, Checkbox, Group, Menu, Modal, Stack, Text } from '@mantine/core';
 import { MoreHorizontal } from 'lucide-react';
 import type { Customer } from '../types';
-import { money, safeDate, statusColor } from '../utils';
+import { amountClass, money, safeDate, statusColor } from '../utils';
 import { CustomerIdentity, EmptyState } from './ui';
 import { Table } from '@mantine/core';
 
@@ -11,19 +11,42 @@ export function CustomerTable({
   actions,
   emptyTitle = 'No accounts match your filters.',
   emptyDescription,
+  selectable,
+  selectedIds,
+  onToggle,
+  onToggleAll,
 }: {
   customers: Customer[];
   onOpen: (c: Customer) => void;
   actions?: (c: Customer) => React.ReactNode;
   emptyTitle?: string;
   emptyDescription?: string;
+  selectable?: boolean;
+  selectedIds?: string[];
+  onToggle?: (id: string) => void;
+  onToggleAll?: () => void;
 }) {
+  const selected = new Set(selectedIds || []);
+  const allSelected = customers.length > 0 && customers.every((c) => selected.has(c.id));
+  const someSelected = customers.some((c) => selected.has(c.id));
+
   return (
     <>
       <div className="desktop-table table-wrap">
         <Table verticalSpacing="sm" horizontalSpacing="sm" highlightOnHover withRowBorders>
           <Table.Thead>
             <Table.Tr>
+              {selectable && (
+                <Table.Th w={36}>
+                  <Checkbox
+                    aria-label="Select all accounts"
+                    checked={allSelected}
+                    indeterminate={someSelected && !allSelected}
+                    onChange={() => onToggleAll?.()}
+                  />
+                </Table.Th>
+              )}
+              <Table.Th>Customer ID</Table.Th>
               <Table.Th>Customer</Table.Th>
               <Table.Th>Outstanding</Table.Th>
               <Table.Th>Status</Table.Th>
@@ -36,11 +59,25 @@ export function CustomerTable({
           <Table.Tbody>
             {customers.map((c) => (
               <Table.Tr key={c.id} style={{ cursor: 'pointer' }} onClick={() => onOpen(c)}>
+                {selectable && (
+                  <Table.Td onClick={(e) => e.stopPropagation()}>
+                    <Checkbox
+                      aria-label={`Select ${c.name}`}
+                      checked={selected.has(c.id)}
+                      onChange={() => onToggle?.(c.id)}
+                    />
+                  </Table.Td>
+                )}
                 <Table.Td>
-                  <CustomerIdentity name={c.name} accountNo={c.accountNo} />
+                  <Text size="xs" fw={650}>
+                    {c.accountNo}
+                  </Text>
                 </Table.Td>
                 <Table.Td>
-                  <span className="amount">{money(c.outstanding)}</span>
+                  <CustomerIdentity name={c.name} />
+                </Table.Td>
+                <Table.Td>
+                  <span className={amountClass(c.outstanding)}>{money(c.outstanding)}</span>
                 </Table.Td>
                 <Table.Td>
                   <Badge variant="light" color={statusColor[c.status]} size="sm">
@@ -80,8 +117,20 @@ export function CustomerTable({
         {customers.map((c) => (
           <div className="mobile-account-card" key={c.id} onClick={() => onOpen(c)}>
             <div className="mobile-account-top">
-              <CustomerIdentity name={c.name} accountNo={c.accountNo} />
-              <span className="amount">{money(c.outstanding)}</span>
+              {selectable && (
+                <div onClick={(e) => e.stopPropagation()}>
+                  <Checkbox
+                    aria-label={`Select ${c.name}`}
+                    checked={selected.has(c.id)}
+                    onChange={() => onToggle?.(c.id)}
+                  />
+                </div>
+              )}
+              <Text size="xs" fw={700}>
+                {c.accountNo}
+              </Text>
+              <CustomerIdentity name={c.name} />
+              <span className={amountClass(c.outstanding)}>{money(c.outstanding)}</span>
             </div>
             <div className="mobile-account-meta">
               <Badge variant="light" color={statusColor[c.status]} size="sm">

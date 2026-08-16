@@ -1,5 +1,6 @@
 ﻿import { useEffect, useMemo, useState } from 'react';
 import {
+  Alert,
   Button,
   Checkbox,
   Group,
@@ -11,9 +12,18 @@ import {
   TextInput,
   Textarea,
 } from '@mantine/core';
-import type { Company, CompanyStatus, Customer, Equipment, PreferredContact, AccountStatus } from '../types';
+import type { Communication, Company, CompanyStatus, Customer, Equipment, PreferredContact, AccountStatus } from '../types';
 import { useApp } from '../context/AppContext';
-import { fillTemplate, money, todayIso } from '../utils';
+import {
+  collectionEmailSubject,
+  fillTemplate,
+  isPaidOrZeroBalance,
+  money,
+  replyEmailSubject,
+  rfcMessageId,
+  splitEmailThread,
+  todayIso,
+} from '../utils';
 
 const modalProps = { radius: 'lg' as const, centered: true, className: 'app-modal', size: 'lg' as const };
 
@@ -295,9 +305,15 @@ export function CustomerFormModal({
           <TextInput label="Email" value={draft.email || ''} onChange={(e) => set('email', e.currentTarget.value)} />
           <Select
             label="Preferred contact method"
-            data={['WhatsApp', 'Phone', 'Email']}
-            value={draft.preferredContact || 'WhatsApp'}
-            onChange={(v) => set('preferredContact', (v || 'WhatsApp') as PreferredContact)}
+            data={[
+              ...new Set(
+                ['WhatsApp', 'Phone', 'Email', draft.preferredContact].filter(Boolean) as string[],
+              ),
+            ]}
+            value={draft.preferredContact || null}
+            searchable
+            clearable
+            onChange={(v) => set('preferredContact', (v || '') as PreferredContact)}
           />
           <TextInput label="Language" value={draft.language || ''} onChange={(e) => set('language', e.currentTarget.value)} />
           <TextInput label="Assigned collector" value={draft.assignedCollector || ''} onChange={(e) => set('assignedCollector', e.currentTarget.value)} />
@@ -482,18 +498,23 @@ export function SendMessageModal({
   opened,
   onClose,
   customer,
+  defaultChannel,
+  replyTo,
 }: {
   opened: boolean;
   onClose: () => void;
   customer: Customer | null;
+  defaultChannel?: 'WhatsApp' | 'Email';
+  replyTo?: Communication | null;
 }) {
   const { companyTemplates, getCompany, sendMessage } = useApp();
-  const [channel, setChannel] = useState<'WhatsApp' | 'Email'>('WhatsApp');
+  const [channel, setChannel] = useState<'WhatsApp' | 'Email'>('Email');
   const [templateId, setTemplateId] = useState<string | null>(null);
   const [custom, setCustom] = useState(false);
   const [message, setMessage] = useState('');
   const [subject, setSubject] = useState('');
   const [saving, setSaving] = useState(false);
+  const isReply = Boolean(replyTo);
 
   const company = customer ? getCompany(customer.companyId) : undefined;
   const templates = useMemo(
@@ -504,14 +525,23 @@ export function SendMessageModal({
 
   useEffect(() => {
     if (!opened || !customer) return;
-    setChannel('WhatsApp');
+    if (replyTo) {
+      setChannel('Email');
+      setCustom(true);
+      setSubject(replyEmailSubject(replyTo.subject));
+      setMessage('');
+      setTemplateId(null);
+      return;
+    }
+    const hasEmail = Boolean(customer.email?.includes('@'));
+    setChannel(defaultChannel || (hasEmail ? 'Email' : 'WhatsApp'));
     setCustom(false);
-    setSubject(`Account ${customer.accountNo} outstanding balance`);
+    setSubject(collectionEmailSubject(customer.accountNo, getCompany(customer.companyId)?.name));
     setTemplateId(null);
-  }, [opened, customer]);
+  }, [opened, customer, defaultChannel, replyTo]);
 
   useEffect(() => {
-    if (!customer || custom) return;
+    if (!customer || custom || isReply) return;
     const body = selected?.body || '';
     setMessage(
       fillTemplate(body, {
@@ -519,35 +549,52 @@ export function SendMessageModal({
         name: customer.name,
         account_number: customer.accountNo,
         account_no: customer.accountNo,
-        outstanding_amount: customer.outstanding,
-        amount: customer.outstanding,
+        outstanding_amount: money(customer.outstanding),
+        amount: money(customer.outstanding),
         due_date: customer.dueDate,
         company_name: company?.name,
         company: company?.name,
         promise_date: customer.promisedDate,
       }),
     );
-  }, [selected, customer, company, custom]);
+  }, [selected, customer, company, custom, isReply]);
 
   if (!customer) return null;
 
   const canSendEmail = Boolean(customer.email?.includes('@'));
   const canSendWhatsApp = Boolean((customer.whatsapp || customer.phone || '').trim());
+  const paidOrZero = isPaidOrZeroBalance(customer) && !isReply;
+  const threadId = rfcMessageId(replyTo?.messageId || replyTo?.externalId);
 
   return (
-    <Modal opened={opened} onClose={onClose} title="Send message" {...modalProps}>
+    <Modal opened={opened} onClose={onClose} title={isReply ? 'Reply to email' : 'Send message'} {...modalProps}>
       <Stack>
-        <Select label="Channel" data={['WhatsApp', 'Email']} value={channel} onChange={(v) => setChannel((v || 'WhatsApp') as 'WhatsApp' | 'Email')} />
-        {!custom && (
-          <Select
-            label="Template"
-            data={templates.map((t) => ({ value: t.id, label: t.name }))}
-            value={templateId || selected?.id || null}
-            onChange={setTemplateId}
-            placeholder={templates.length ? 'Select template' : 'No templates for this channel'}
-          />
+        {!isReply && (
+          <>
+            <Select
+              label="Channel"
+              data={['Email', 'WhatsApp']}
+              value={channel}
+              onChange={(v) => setChannel((v || 'Email') as 'WhatsApp' | 'Email')}
+            />
+            {!custom && (
+              <Select
+                label="Template"
+                data={templates.map((t) => ({ value: t.id, label: t.name }))}
+                value={templateId || selected?.id || null}
+                onChange={setTemplateId}
+                placeholder={templates.length ? 'Select template' : 'No templates for this channel'}
+              />
+            )}
+            <Checkbox label="Use custom message" checked={custom} onChange={(e) => setCustom(e.currentTarget.checked)} />
+          </>
         )}
-        <Checkbox label="Use custom message" checked={custom} onChange={(e) => setCustom(e.currentTarget.checked)} />
+        {paidOrZero && (
+          <Alert color="yellow" title="No balance due">
+            Account {customer.accountNo} is paid (R 0). Collection emails are blocked — sending “outstanding
+            balance R 0” is a common spam trigger and can cause Gmail replies to bounce with 550.
+          </Alert>
+        )}
         {channel === 'Email' && (
           <>
             <TextInput label="To" value={customer.email || ''} disabled />
@@ -557,15 +604,36 @@ export function SendMessageModal({
         {channel === 'WhatsApp' && (
           <TextInput label="To" value={customer.whatsapp || customer.phone || ''} disabled />
         )}
-        <Textarea label="Message preview" minRows={7} value={message} onChange={(e) => setMessage(e.currentTarget.value)} />
+        <Textarea
+          label={isReply ? 'Reply' : 'Message preview'}
+          minRows={isReply ? 5 : 7}
+          value={message}
+          onChange={(e) => setMessage(e.currentTarget.value)}
+          placeholder={isReply ? 'Write your reply…' : undefined}
+        />
+        {isReply && replyTo && (
+          <div className="email-quote">
+            <Text size="10px" tt="uppercase" c="dimmed" fw={700} mb={4}>
+              Previous message
+            </Text>
+            {replyTo.subject ? (
+              <Text size="xs" fw={650} mb={4}>
+                {replyTo.subject}
+              </Text>
+            ) : null}
+            <Text size="xs" c="dimmed" style={{ whiteSpace: 'pre-wrap' }}>
+              {splitEmailThread(replyTo.message).body || replyTo.message}
+            </Text>
+          </div>
+        )}
         <Text size="xs" c="dimmed">
           {channel === 'Email'
             ? canSendEmail
-              ? 'Email will be sent via your configured SMTP mailer.'
-              : 'This customer has no email address â€” add one before sending.'
-            : canSendWhatsApp
-              ? 'WhatsApp will be sent via Twilio. Recipients must be opted in / sandbox-joined.'
-              : 'This customer has no WhatsApp or mobile number â€” add one before sending.'}
+              ? isReply
+                ? 'This reply stays in the same email thread and is logged on the timeline.'
+                : 'Email is the day-to-day collections channel. The customer can reply and it will show on this timeline.'
+              : 'This customer has no email address — add one before sending.'
+            : 'WhatsApp is trial-limited until Twilio is upgraded. Use Email for other customers.'}
         </Text>
         <Group justify="flex-end">
           <Button variant="default" onClick={onClose}>
@@ -574,6 +642,7 @@ export function SendMessageModal({
           <Button
             loading={saving}
             disabled={
+              paidOrZero ||
               !message.trim() ||
               (channel === 'Email' && (!canSendEmail || !subject.trim())) ||
               (channel === 'WhatsApp' && !canSendWhatsApp)
@@ -583,14 +652,99 @@ export function SendMessageModal({
               const result = await sendMessage({
                 customerId: customer.id,
                 channel,
-                message,
+                message: message.trim(),
                 subject: channel === 'Email' ? subject : undefined,
+                isReply,
+                inReplyTo: threadId || undefined,
+                references: threadId || undefined,
               });
               setSaving(false);
               if (result.ok) onClose();
             }}
           >
-            {channel === 'Email' ? 'Send Email' : 'Send WhatsApp'}
+            {isReply ? 'Send reply' : channel === 'Email' ? 'Send Email' : 'Send WhatsApp'}
+          </Button>
+        </Group>
+      </Stack>
+    </Modal>
+  );
+}
+
+export function BulkEmailModal({
+  opened,
+  onClose,
+  customers,
+}: {
+  opened: boolean;
+  onClose: () => void;
+  customers: Customer[];
+}) {
+  const { companyTemplates, sendBulkEmails, company } = useApp();
+  const templates = useMemo(
+    () => companyTemplates.filter((t) => t.channel === 'Email'),
+    [companyTemplates],
+  );
+  const [templateId, setTemplateId] = useState<string | null>(null);
+  const [subject, setSubject] = useState('');
+  const [saving, setSaving] = useState(false);
+  const selected = templates.find((t) => t.id === templateId) || templates[0];
+  const withEmail = customers.filter((c) => String(c.email || '').includes('@'));
+  const collectable = withEmail.filter((c) => !isPaidOrZeroBalance(c));
+  const withoutEmail = customers.length - withEmail.length;
+  const skippedPaid = withEmail.length - collectable.length;
+  const previewCustomer = collectable[0];
+  const preview = previewCustomer
+    ? fillTemplate(selected?.body || '', {
+        name: previewCustomer.name,
+        account_no: previewCustomer.accountNo,
+        amount: money(previewCustomer.outstanding),
+        due_date: previewCustomer.dueDate,
+        company: company.name,
+      })
+    : '';
+
+  useEffect(() => {
+    if (!opened) return;
+    setTemplateId(templates[0]?.id || null);
+    setSubject(`${company.name} account reminder`);
+  }, [opened, templates, company.name]);
+
+  return (
+    <Modal opened={opened} onClose={onClose} title="Email selected accounts" {...modalProps}>
+      <Stack>
+        <Text size="sm">
+          {collectable.length} account{collectable.length === 1 ? '' : 's'} with email and a balance due
+          {withoutEmail ? ` · ${withoutEmail} skipped (no email)` : ''}
+          {skippedPaid ? ` · ${skippedPaid} skipped (paid / R 0)` : ''}
+        </Text>
+        <Select
+          label="Template"
+          data={templates.map((t) => ({ value: t.id, label: t.name }))}
+          value={templateId || selected?.id || null}
+          onChange={setTemplateId}
+          placeholder={templates.length ? 'Select template' : 'No email templates'}
+        />
+        <TextInput label="Subject" value={subject} onChange={(e) => setSubject(e.currentTarget.value)} />
+        <Textarea label="Preview (first recipient)" minRows={7} value={preview} readOnly />
+        <Group justify="flex-end">
+          <Button variant="default" onClick={onClose}>
+            Cancel
+          </Button>
+          <Button
+            loading={saving}
+            disabled={!collectable.length || !subject.trim() || !selected}
+            onClick={async () => {
+              setSaving(true);
+              await sendBulkEmails({
+                customerIds: collectable.map((c) => c.id),
+                subject,
+                templateId: selected?.id,
+              });
+              setSaving(false);
+              onClose();
+            }}
+          >
+            Send {collectable.length} email{collectable.length === 1 ? '' : 's'}
           </Button>
         </Group>
       </Stack>

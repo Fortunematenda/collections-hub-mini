@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Creates /var/www/collections-hub-mini and installs Collections Hub Mini.
+# Creates /var/www/collections-hub-mini and installs Collections Hub.
 # Run on the server as root (or with sudo):
 #   curl -fsSL ... | bash
 # or:
@@ -35,7 +35,12 @@ if [ -d "$APP_DIR/.git" ]; then
   git -C "$APP_DIR" pull --ff-only origin main
 else
   echo "==> Cloning into $APP_DIR"
-  rm -rf "$APP_DIR"
+  if [ -e "$APP_DIR" ] && [ ! -d "$APP_DIR/.git" ]; then
+    echo "Refusing to replace $APP_DIR because it exists and is not a git checkout."
+    echo "Move or empty that folder, then re-run."
+    exit 1
+  fi
+  mkdir -p "$APP_DIR"
   git clone "$REPO_URL" "$APP_DIR"
 fi
 

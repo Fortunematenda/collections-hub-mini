@@ -3,8 +3,10 @@ import { ActionIcon, Badge, Card, Group, Tooltip } from '@mantine/core';
 import { Building2, CalendarClock, Check, MessageCircle } from 'lucide-react';
 import { useNavigate } from 'react-router-dom';
 import { CustomerTable } from '../components/CustomerTable';
+import { TablePager } from '../components/TablePager';
 import { PageHero } from '../components/ui';
 import { useApp } from '../context/AppContext';
+import { useTablePaging } from '../hooks/useTablePaging';
 import { MarkPaidModal, PromiseToPayModal, SendMessageModal } from '../modals/CoreModals';
 import type { Customer } from '../types';
 
@@ -18,6 +20,7 @@ export default function Followups() {
   const list = companyCustomers.filter(
     (c) => ['Payment Due', 'Follow-up', 'Unresponsive'].includes(c.status) && c.outstanding > 0,
   );
+  const paging = useTablePaging(list, company.id || 'followups');
 
   const actions = (c: Customer) => (
     <Group gap={5} wrap="nowrap">
@@ -59,11 +62,21 @@ export default function Followups() {
 
       <Card className="card" radius="lg" p="lg">
         <CustomerTable
-          customers={list}
+          customers={paging.paged}
           onOpen={(c) => navigate('/customers/' + c.id)}
           actions={actions}
           emptyTitle="No follow-ups waiting"
           emptyDescription="Accounts in Payment Due, Follow-up or Unresponsive with an outstanding balance will appear here."
+        />
+        <TablePager
+          total={paging.total}
+          from={paging.from}
+          to={paging.to}
+          page={paging.page}
+          pageCount={paging.pageCount}
+          pageSize={paging.pageSize}
+          onPageChange={paging.setPage}
+          onPageSizeChange={paging.changePageSize}
         />
       </Card>
 

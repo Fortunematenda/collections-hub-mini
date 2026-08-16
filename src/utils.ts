@@ -1,4 +1,4 @@
-import { format, parseISO, differenceInCalendarDays } from 'date-fns';
+import { addDays, differenceInCalendarDays, format, isValid, lastDayOfMonth, nextDay, parse, parseISO, startOfDay } from 'date-fns';
 import type { AccountStatus, RecoveryStatus } from './types';
 
 export const statusColor: Record<AccountStatus, string> = {
@@ -29,6 +29,25 @@ export const recoveryColor: Record<RecoveryStatus, string> = {
 
 export const money = (n: number) =>
   new Intl.NumberFormat('en-ZA', { style: 'currency', currency: 'ZAR', maximumFractionDigits: 0 }).format(n || 0);
+
+export const amountClass = (n: number) => (n < 0 ? 'amount amount-negative' : 'amount');
+
+export function compareAccountNo(a?: string, b?: string) {
+  return String(a || '').localeCompare(String(b || ''), undefined, { numeric: true, sensitivity: 'base' });
+}
+
+/** Parse Excel/CSV money, keeping credits as negative (e.g. -120, (120), 120-). */
+export function parseSignedAmount(raw: unknown) {
+  if (typeof raw === 'number' && Number.isFinite(raw)) return raw;
+  const text = String(raw ?? '').trim();
+  if (!text) return 0;
+  const parenNegative = /^\(.*\)$/.test(text);
+  const trailingNegative = /-$/.test(text.replace(/\s/g, ''));
+  const normalized = text.replace(/[()]/g, '').replace(/[−–]/g, '-').replace(/[^0-9.-]/g, '');
+  const value = Number(normalized);
+  if (!Number.isFinite(value)) return 0;
+  return parenNegative || trailingNegative ? -Math.abs(value) : value;
+}
 
 export const initials = (name: string) =>
   (name || '?')
@@ -70,18 +89,32 @@ export const daysOverdue = (dueDate?: string) => {
 export const normalize = (v: string) => v.toLowerCase().replace(/[^a-z0-9]/g, '');
 
 export const aliases: Record<string, string[]> = {
-  accountNo: ['account', 'accountno', 'accountnumber', 'clientno', 'customerno', 'id'],
+  accountNo: ['account', 'accountno', 'accountnumber', 'clientno', 'customerno', 'customerid', 'id'],
   name: ['client', 'clientname', 'customer', 'customername', 'name', 'fullname'],
-  phone: ['phone', 'mobile', 'cell', 'cellphone', 'telephone', 'contactnumber'],
-  email: ['email', 'emailaddress'],
-  outstanding: ['outstanding', 'amountoutstanding', 'balance', 'outstandingamount', 'amountdue', 'arrears'],
+  customerReference: ['customerreference', 'reference', 'ref', 'clientref'],
+  servicePackage: ['service', 'servicepackage', 'package', 'product', 'plan'],
+  monthlySubscription: ['monthlysubscription', 'subscription', 'monthlyfee', 'recurring'],
+  originalOutstanding: ['originaloutstanding', 'originalbalance', 'originalamount'],
+  outstanding: ['outstanding', 'currentoutstanding', 'amountoutstanding', 'balance', 'outstandingamount', 'amountdue', 'arrears'],
   dueDate: ['duedate', 'date due', 'paymentdate', 'due'],
+  collectionStage: ['collectionstatus', 'collectionstage', 'status', 'accountstatus'],
+  phone: ['phone', 'mobile', 'cell', 'cellphone', 'telephone', 'contactnumber'],
+  whatsapp: ['whatsapp', 'whatsappnumber', 'wa'],
+  email: ['email', 'emailaddress'],
+  preferredContact: ['preferredcontact', 'preferredchannel', 'contactmethod'],
+  language: ['language', 'lang', 'locale'],
   address: ['address', 'installationaddress', 'serviceaddress'],
-  equipment: ['equipment', 'device', 'cpe', 'antenna'],
+  suburb: ['suburb', 'area', 'township'],
+  city: ['city', 'town'],
+  province: ['province', 'state', 'region'],
+  postalCode: ['postalcode', 'postcode', 'zip', 'zipcode'],
+  nextFollowUp: ['nextfollowup', 'followup', 'followupdate', 'nextaction'],
+  assignedCollector: ['assignedcollector', 'collector', 'agent', 'assignedto'],
+  equipment: ['equipment', 'equipmentsummary', 'device', 'cpe', 'antenna'],
 };
 
 export function findColumn(headers: string[], key: string) {
-  const wanted = aliases[key].map(normalize);
+  const wanted = (aliases[key] || [key]).map(normalize);
   return headers.find((h) => wanted.includes(normalize(h))) || '';
 }
 
@@ -129,6 +162,186 @@ export function fillTemplate(
   };
   for (const [k, v] of Object.entries(map)) out = out.split(k).join(v);
   return out;
+}
+
+/** Paid / R 0 accounts must not get collection emails — they look like spam and trigger inbound 550s. */
+export function isPaidOrZeroBalance(customer: { outstanding?: number; status?: string }) {
+  return customer.status === 'Paid' || Number(customer.outstanding || 0) <= 0;
+}
+
+export function collectionEmailSubject(accountNo: string, companyName?: string) {
+  const account = String(accountNo || '').trim() || 'account';
+  const company = String(companyName || '').trim();
+  return company ? `Account ${account} — ${company}` : `Account ${account}`;
+}
+
+export function normalizeTab(value: string | null | undefined, allowed: readonly string[], fallback: string) {
+  const tab = String(value || '').trim();
+  return allowed.includes(tab) ? tab : fallback;
+}
+
+export function replyEmailSubject(subject?: string) {
+  const value = String(subject || '').trim() || 'your email';
+  return /^re\s*:/i.test(value) ? value : `Re: ${value}`;
+}
+
+export function rfcMessageId(value?: string) {
+  const raw = String(value || '')
+    .replace(/^imap:/i, '')
+    .replace(/^smtp:/i, '')
+    .trim()
+    .replace(/^<|>$/g, '');
+  return raw ? `<${raw}>` : '';
+}
+
+export function isUnreadCommunication(item: { direction?: string; readAt?: string }) {
+  return item.direction === 'Incoming' && !item.readAt;
+}
+
+export function communicationCardClass(item: { direction?: string; readAt?: string }) {
+  const unread = isUnreadCommunication(item) ? ' timeline-item-unread' : '';
+  if (item.direction === 'Incoming') return `timeline-item timeline-item-in${unread}`;
+  if (item.direction === 'Outgoing') return 'timeline-item timeline-item-out';
+  return 'timeline-item timeline-item-internal';
+}
+
+export function communicationRowClass(item: { direction?: string; readAt?: string }) {
+  if (isUnreadCommunication(item)) return 'comm-row-in comm-row-unread';
+  if (item.direction === 'Incoming') return 'comm-row-in';
+  if (item.direction === 'Outgoing') return 'comm-row-out';
+  return 'comm-row-internal';
+}
+
+export function splitEmailThread(raw?: string) {
+  const text = String(raw || '').replace(/\r/g, '');
+  if (!text.trim()) return { body: '', quote: '' };
+
+  const lines = text.split('\n');
+  const bodyLines: string[] = [];
+  let cut = lines.length;
+
+  for (let i = 0; i < lines.length; i += 1) {
+    const trimmed = lines[i].trim();
+    const next = (lines[i + 1] || '').trim();
+    const isGmailOn =
+      /^On\s.+/i.test(trimmed) &&
+      (/wrote:\s*$/i.test(trimmed) || /<[^>]+@[^>]+>/.test(trimmed) || /^wrote:\s*$/i.test(next));
+    if (
+      /^>/.test(trimmed) ||
+      /^wrote:\s*$/i.test(trimmed) ||
+      isGmailOn ||
+      /^-{2,} ?Original Message/i.test(trimmed) ||
+      (/^From:\s.+/i.test(trimmed) && /^(Sent|Date):/i.test(next))
+    ) {
+      cut = i;
+      break;
+    }
+    bodyLines.push(lines[i]);
+  }
+
+  return {
+    body: bodyLines
+      .join('\n')
+      .replace(/\s+On [A-Z][a-z]{2}, \d{1,2} \w+ \d{4}[\s\S]*$/i, '')
+      .trim(),
+    quote: lines.slice(cut).join('\n').trim(),
+  };
+}
+
+export function cleanEmailBody(raw?: string) {
+  const { body } = splitEmailThread(raw);
+  return body;
+}
+
+const PROMISE_NO =
+  /\b(already paid|i have paid|i paid|have paid|not interested|no longer|cancel(?:ling|led)?|can'?t pay|cannot pay|won'?t pay|will not pay|unable to pay)\b/i;
+const PROMISE_YES =
+  /\b(promise[sd]? to pay|i(?:'| a)?m going to pay|i(?:'?ll| will) pay|will pay|can pay|pay (?:on|by|before)|payment (?:on|by)|settle (?:on|by)|make (?:a )?payment|send (?:the )?payment|give me until|pay you)\b/i;
+const MONTHS =
+  'january|february|march|april|may|june|july|august|september|october|november|december|jan|feb|mar|apr|jun|jul|aug|sep|sept|oct|nov|dec';
+const WEEKDAYS = ['sunday', 'monday', 'tuesday', 'wednesday', 'thursday', 'friday', 'saturday'] as const;
+
+function isoDay(date: Date) {
+  return format(date, 'yyyy-MM-dd');
+}
+
+function upcoming(date: Date) {
+  const today = startOfDay(new Date());
+  const value = startOfDay(date);
+  if (value < today) value.setFullYear(value.getFullYear() + 1);
+  return value;
+}
+
+function parseMonthNameDate(day: string, monthRaw: string, year: string, now: Date) {
+  const month = monthRaw.toLowerCase() === 'sept' ? 'sep' : monthRaw;
+  for (const fmt of ['d MMMM yyyy', 'd MMM yyyy']) {
+    const value = parse(`${day} ${month} ${year}`, fmt, now);
+    if (isValid(value)) return value;
+  }
+  return null;
+}
+
+export function parsePromiseFromReply(raw?: string): { date: string; dateInferred: boolean } | null {
+  const text = String(raw || '').replace(/\s+/g, ' ').trim();
+  if (!text || PROMISE_NO.test(text) || !PROMISE_YES.test(text)) return null;
+
+  const now = new Date();
+  const lower = text.toLowerCase();
+
+  const iso = text.match(/\b(20\d{2}-\d{2}-\d{2})\b/);
+  if (iso) {
+    const date = parseISO(iso[1]);
+    if (isValid(date)) return { date: isoDay(upcoming(date)), dateInferred: false };
+  }
+
+  const slash = text.match(/\b(\d{1,2})[/-](\d{1,2})(?:[/-](\d{2,4}))?\b/);
+  if (slash) {
+    const day = Number(slash[1]);
+    const month = Number(slash[2]);
+    const year = slash[3] ? Number(slash[3].length === 2 ? `20${slash[3]}` : slash[3]) : now.getFullYear();
+    const date = new Date(year, month - 1, day);
+    if (isValid(date) && day >= 1 && day <= 31 && month >= 1 && month <= 12) {
+      return { date: isoDay(upcoming(date)), dateInferred: false };
+    }
+  }
+
+  const dayMonth = text.match(new RegExp(`\\b(\\d{1,2})(?:st|nd|rd|th)?\\s+(?:of\\s+)?(${MONTHS})(?:\\s+(\\d{4}))?\\b`, 'i'));
+  if (dayMonth) {
+    const value = parseMonthNameDate(dayMonth[1], dayMonth[2], dayMonth[3] || String(now.getFullYear()), now);
+    if (value) return { date: isoDay(upcoming(value)), dateInferred: false };
+  }
+
+  const monthDay = text.match(new RegExp(`\\b(${MONTHS})\\s+(\\d{1,2})(?:st|nd|rd|th)?(?:\\s+(\\d{4}))?\\b`, 'i'));
+  if (monthDay) {
+    const value = parseMonthNameDate(monthDay[2], monthDay[1], monthDay[3] || String(now.getFullYear()), now);
+    if (value) return { date: isoDay(upcoming(value)), dateInferred: false };
+  }
+
+  if (/\btomorrow\b/i.test(text)) return { date: isoDay(addDays(now, 1)), dateInferred: false };
+  if (/\btoday\b/i.test(text)) return { date: isoDay(now), dateInferred: false };
+  if (/\bnext week\b/i.test(text)) return { date: isoDay(addDays(now, 7)), dateInferred: false };
+  if (/\bend of (the )?month\b/i.test(text) || /\bmonth end\b/i.test(text)) {
+    return { date: isoDay(lastDayOfMonth(now)), dateInferred: false };
+  }
+
+  const ordinal = text.match(/\b(?:on\s+)?(?:the\s+)?(\d{1,2})(?:st|nd|rd|th)\b/i);
+  if (ordinal) {
+    const day = Number(ordinal[1]);
+    if (day >= 1 && day <= 31) {
+      const date = new Date(now.getFullYear(), now.getMonth(), day);
+      if (startOfDay(date) < startOfDay(now)) date.setMonth(date.getMonth() + 1);
+      return { date: isoDay(date), dateInferred: false };
+    }
+  }
+
+  for (let i = 0; i < WEEKDAYS.length; i += 1) {
+    if (new RegExp(`\\b${WEEKDAYS[i]}\\b`, 'i').test(lower)) {
+      const date = now.getDay() === i ? startOfDay(now) : nextDay(now, i as 0 | 1 | 2 | 3 | 4 | 5 | 6);
+      return { date: isoDay(date), dateInferred: false };
+    }
+  }
+
+  return { date: isoDay(addDays(now, 7)), dateInferred: true };
 }
 
 export function fullAddress(parts: {

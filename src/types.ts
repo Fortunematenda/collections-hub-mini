@@ -8,9 +8,44 @@ export type NavKey =
   | 'imports'
   | 'templates'
   | 'communications'
+  | 'integrations'
+  | 'automations'
   | 'users'
   | 'roles'
   | 'settings';
+
+export type IntegrationProvider = 'Splynx' | 'Xero' | 'Sage' | 'Excel / CSV' | 'WhatsApp' | 'Email';
+export type IntegrationStatus = 'Connected' | 'Needs attention' | 'Disconnected';
+
+export type Integration = {
+  id: string;
+  companyId: string;
+  provider: IntegrationProvider;
+  status: IntegrationStatus;
+  syncFrequency: 'Manual' | '15 minutes' | 'Hourly' | 'Daily';
+  lastSync?: string;
+  lastResult?: string;
+  baseUrl?: string;
+  accountLabel?: string;
+  enabled: boolean;
+};
+
+export type AutomationTrigger = 'Before due date' | 'Invoice overdue' | 'Promise due' | 'Promise broken' | 'Payment received' | 'Communication failed';
+export type AutomationAction = 'Send WhatsApp' | 'Send email' | 'Create follow-up' | 'Notify manager' | 'Request suspension' | 'Start recovery';
+
+export type AutomationRule = {
+  id: string;
+  companyId: string;
+  name: string;
+  trigger: AutomationTrigger;
+  daysOffset: number;
+  minimumBalance: number;
+  action: AutomationAction;
+  templateId?: string;
+  active: boolean;
+  requiresApproval: boolean;
+  createdAt: string;
+};
 
 export type AccountStatus =
   | 'Payment Due'
@@ -135,7 +170,7 @@ export type Customer = {
   monthlySubscription?: number;
   billingNotes?: string;
   notes?: string;
-  preferredContact?: PreferredContact;
+  preferredContact?: PreferredContact | string;
   language?: string;
   assignedCollector?: string;
   nextFollowUp?: string;
@@ -241,6 +276,10 @@ export type Communication = {
   createdAt: string;
   createdBy: string;
   callResult?: CallResult;
+  externalId?: string;
+  messageId?: string;
+  readAt?: string;
+  handledAs?: 'promise' | 'none' | 'skipped';
 };
 
 export type Note = {

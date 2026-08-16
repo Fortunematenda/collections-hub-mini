@@ -7,6 +7,10 @@ export type SendWhatsAppPayload = {
   from?: string;
   customerName?: string;
   accountNo?: string;
+  dueDate?: string;
+  amount?: string;
+  contentSid?: string;
+  contentVariables?: Record<string, string>;
 };
 
 export type SendWhatsAppResult =
