@@ -164,7 +164,8 @@ export default function Imports() {
               ))}
               <div className="import-commit">
                 <Text size="xs" c="dimmed">
-                  Required: Account number, Client name, Current outstanding. Days overdue is calculated from due date.
+                  {importRows.length} data rows found in this file (not a 100-row limit). Required: Account number,
+                  Client name, Current outstanding. Days overdue is calculated from due date.
                 </Text>
                 <Button leftSection={<Import size={14} />} onClick={commitImport}>
                   Import {importRows.length} rows

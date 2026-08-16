@@ -1,6 +1,7 @@
 import React, { createContext, useCallback, useContext, useEffect, useMemo, useRef, useState } from 'react';
 import * as XLSX from 'xlsx';
 import { notifyError, notifySuccess, notifyWarning } from '../lib/notify';
+import { parseImportWorkbook } from '../lib/parseImportWorkbook';
 import {
   initialActivities,
   initialCommunications,
@@ -88,22 +89,6 @@ type PersistedAppData = {
   importMappings?: Record<string, Mapping>;
   revision?: number;
 };
-
-function sheetToAllRows(ws: XLSX.WorkSheet | undefined) {
-  if (!ws) return [];
-  const keys = Object.keys(ws).filter((key) => !key.startsWith('!'));
-  if (!keys.length) return [];
-  let maxR = 0;
-  let maxC = 0;
-  for (const key of keys) {
-    const cell = XLSX.utils.decode_cell(key);
-    if (cell.r > maxR) maxR = cell.r;
-    if (cell.c > maxC) maxC = cell.c;
-  }
-  ws['!ref'] = XLSX.utils.encode_range({ s: { r: 0, c: 0 }, e: { r: maxR, c: maxC } });
-  const rows = XLSX.utils.sheet_to_json<Record<string, unknown>>(ws, { defval: '', blankrows: false });
-  return rows.filter((row) => Object.values(row).some((value) => String(value ?? '').trim() !== ''));
-}
 
 function loadPersistedAppData(): PersistedAppData | null {
   try {
@@ -1743,9 +1728,14 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
 
   async function handleFile(file: File) {
     const buffer = await file.arrayBuffer();
-    const wb = XLSX.read(buffer, { type: 'array', cellDates: true });
-    const ws = wb.Sheets[wb.SheetNames[0]];
-    const rows = sheetToAllRows(ws);
+    const { rows, sourceLabel } = parseImportWorkbook(buffer, file.name);
+    if (!rows.length) {
+      toastError('No data rows were found in that file.');
+      return;
+    }
+    toastSuccess(
+      `Loaded ${rows.length} data row${rows.length === 1 ? '' : 's'} from ${sourceLabel}. Empty formatted rows in Excel are not counted.`,
+    );
     const headers = rows.length ? Object.keys(rows[0]) : [];
     setImportRows(rows);
     setImportFile(file.name);
