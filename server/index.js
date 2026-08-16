@@ -332,26 +332,33 @@ function slugify(value) {
     .slice(0, 48);
 }
 
+function allowedOrigins() {
+  return String(process.env.ALLOWED_ORIGIN || '')
+    .split(',')
+    .map((v) => v.trim())
+    .filter(Boolean);
+}
+
+function isAllowedOrigin(origin, hostHeader) {
+  if (!origin) return true;
+  const allowed = allowedOrigins();
+  if (allowed.includes(origin)) return true;
+  try {
+    if (hostHeader && new URL(origin).host === hostHeader) return true;
+  } catch {
+    // ignore invalid Origin
+  }
+  return !isProductionLike() && allowed.length === 0;
+}
+
 const app = express();
-app.use(
+app.use((req, res, next) => {
   cors({
-    origin(origin, callback) {
-      const allowed = String(process.env.ALLOWED_ORIGIN || '')
-        .split(',')
-        .map((v) => v.trim())
-        .filter(Boolean);
-      if (!origin) return callback(null, true);
-      if (!allowed.length) {
-        if (isProductionLike()) return callback(new Error('ALLOWED_ORIGIN must be set in production.'));
-        return callback(null, true);
-      }
-      if (allowed.includes(origin)) return callback(null, true);
-      return callback(new Error('Origin is not allowed by CORS policy.'));
-    },
+    origin: isAllowedOrigin(req.headers.origin, req.headers.host),
     credentials: true,
     allowedHeaders: ['Content-Type', 'Authorization'],
-  }),
-);
+  })(req, res, next);
+});
 app.use(express.json({ limit: '10mb' }));
 app.get('/favicon.ico', (_req, res) => res.status(204).end());
 
