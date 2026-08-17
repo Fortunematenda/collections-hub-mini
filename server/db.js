@@ -194,6 +194,9 @@ export async function readAppStore() {
 }
 
 export async function writeAppStore(payload) {
+  if (!payload || typeof payload !== 'object') {
+    throw new Error('Nothing to save.');
+  }
   const current = usingDatabase && pool ? null : readFileStore();
   let currentRevision = Number(payload.revision);
   if (!Number.isFinite(currentRevision)) {

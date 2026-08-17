@@ -399,7 +399,7 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
     setTeams(Array.isArray(data.teams) ? data.teams : []);
     setDocuments(Array.isArray(data.documents) ? data.documents : []);
     setImportMappings(data.importMappings && typeof data.importMappings === 'object' ? data.importMappings : {});
-    const nextRevision = Number(data.revision || 0);
+    const nextRevision = Number(data?.revision || 0);
     revisionRef.current = nextRevision;
     setRevision(nextRevision);
   }
@@ -515,7 +515,7 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
           return;
         }
         if (result.stale && result.data) {
-          const remoteRev = Number((result.data as PersistedAppData).revision || 0);
+          const remoteRev = Number(result.data?.revision || 0);
           if (remoteRev !== Number(payload.revision || 0)) {
             revisionRef.current = remoteRev;
             setRevision(remoteRev);
@@ -1313,7 +1313,7 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
           },
         },
       );
-      if (cancelled) return;
+      if (cancelled || !result?.store) return;
       setCustomers(result.store.customers);
       setPromises(result.store.promises);
       setFollowUps(result.store.followUps);

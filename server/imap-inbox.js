@@ -434,8 +434,8 @@ export async function syncImapInbox() {
       communications: [...added, ...nextInbound, ...others],
       activities: [...activities, ...nextActivities],
     };
-    const jobs = runCollectionsJobs(withMail);
-    await writeAppStore(jobs.store);
+    const jobs = await runCollectionsJobs(withMail);
+    await writeAppStore({ ...jobs.store, revision: Number(jobs.store?.revision ?? withMail.revision ?? 0) });
 
     if (added.length) {
       console.log(`[imap] imported ${added.length} inbound email${added.length === 1 ? '' : 's'}`);

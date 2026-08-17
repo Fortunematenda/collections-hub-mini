@@ -455,7 +455,7 @@ app.post('/api/documents', authRequired, requirePermission('customers.manage', '
       documents: [document, ...(store.documents || [])],
       revision: Number(store.revision || 0),
     });
-    return res.json({ ok: true, document, revision: saved.revision });
+    return res.json({ ok: true, document, revision: saved?.revision });
   } catch (error) {
     const message = error instanceof Error ? error.message : 'Unable to store file.';
     return res.status(400).json({ ok: false, error: message });
@@ -472,7 +472,7 @@ app.post('/api/documents/statement', authRequired, requirePermission('customers.
     if (!built?.document) return res.status(404).json({ ok: false, error: 'Customer not found.' });
     const documents = built.reused ? store.documents || [] : [built.document, ...(store.documents || [])];
     const saved = await writeAppStore({ ...store, documents, revision: Number(store.revision || 0) });
-    return res.json({ ok: true, document: built.document, reused: built.reused, revision: saved.revision });
+    return res.json({ ok: true, document: built.document, reused: built.reused, revision: saved?.revision });
   } catch (error) {
     const message = error instanceof Error ? error.message : 'Unable to generate statement.';
     return res.status(400).json({ ok: false, error: message });
@@ -492,7 +492,7 @@ app.post('/api/documents/payment-details', authRequired, requirePermission('cust
       documents: [built.document, ...(store.documents || [])],
       revision: Number(store.revision || 0),
     });
-    return res.json({ ok: true, document: built.document, revision: saved.revision });
+    return res.json({ ok: true, document: built.document, revision: saved?.revision });
   } catch (error) {
     const message = error instanceof Error ? error.message : 'Unable to store payment details.';
     return res.status(400).json({ ok: false, error: message });
@@ -560,7 +560,7 @@ app.put('/api/data', authRequired, requirePermission(...WRITE_PERMISSIONS), asyn
       return res.status(400).json({ ok: false, error: 'Invalid payload: companies must be an array.' });
     }
     const current = await readAppStore();
-    if (body.revision != null && Number(body.revision) !== Number(current.revision || 0)) {
+    if (body.revision != null && Number(body.revision) !== Number(current?.revision || 0)) {
       return res.status(409).json({
         ok: false,
         stale: true,
@@ -607,9 +607,9 @@ app.put('/api/data', authRequired, requirePermission(...WRITE_PERMISSIONS), asyn
       }),
       importMappings: body.importMappings && typeof body.importMappings === 'object' ? body.importMappings : current.importMappings || {},
       promiseEmailSeeded: Boolean(current.promiseEmailSeeded || body.promiseEmailSeeded),
-      revision: Number(current.revision || 0),
+      revision: Number(current?.revision || 0),
     });
-    return res.json({ ok: true, data: saved, revision: saved.revision });
+    return res.json({ ok: true, data: saved, revision: saved?.revision });
   } catch (error) {
     const message = error instanceof Error ? error.message : 'Unable to save app data.';
     console.error('[data]', message);
