@@ -439,10 +439,7 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
           applyPersistedData(result.data as PersistedAppData);
           window.setTimeout(() => {
             skipServerSave.current = false;
-          }, 0);
-          notifyWarning(result.error || 'Loaded the latest data from another session.', {
-            title: 'Workspace updated',
-          });
+          }, 2000);
           return;
         }
         console.warn('[data] server sync failed:', result.error);
@@ -512,6 +509,10 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
       }
 
       const incoming = result.communications || [];
+      if (!result.imported && !result.reassigned) {
+        if (!opts?.quiet) toastSuccess('Inbox checked. No new customer replies.');
+        return { ok: true as const, imported: 0 };
+      }
       if (incoming.length) {
         setCommunications((prev) => {
           const map = new Map(prev.map((c) => [c.id, c]));
@@ -1307,7 +1308,7 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
     toastSuccess('Email sent successfully.');
     window.setTimeout(() => {
       void syncInbox({ quiet: true });
-    }, 5000);
+    }, 2000);
     return { ok: true };
   }
 

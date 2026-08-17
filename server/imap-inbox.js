@@ -214,6 +214,8 @@ async function importFromAccount(settings, store, existingExt) {
     secure: true,
     auth: { user: settings.user, pass: settings.pass },
     logger: false,
+    connectionTimeout: 12000,
+    greetingTimeout: 12000,
     ...(family ? { tls: { family } } : {}),
   });
   const added = [];
@@ -335,7 +337,7 @@ export async function syncImapInbox() {
         imported: 0,
         unmatched: 0,
         busy: true,
-        communications: inboundFromStore(store),
+        communications: [],
         activities: [],
         customers: [],
       };
@@ -418,7 +420,7 @@ export async function syncImapInbox() {
         ok: true,
         imported: 0,
         unmatched,
-        communications: nextInbound,
+        communications: [],
         activities: [],
         customers: [],
       };
@@ -442,7 +444,7 @@ export async function syncImapInbox() {
       imported: added.length,
       reassigned: rehomed.length,
       unmatched,
-      communications: [...added, ...nextInbound],
+      communications: [...added, ...rehomed],
       activities,
       customers: [...touched.values()],
     };
