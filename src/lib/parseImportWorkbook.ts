@@ -42,7 +42,7 @@ function isEmptyRow(cells: unknown[]) {
 function uniqueHeaders(cells: unknown[]) {
   const seen = new Map<string, number>();
   return cells.map((cell, index) => {
-    const base = cellText(cell) || `Column ${index + 1}`;
+    const base = cellText(cell).replace(/^\uFEFF/, '') || `Column ${index + 1}`;
     const next = (seen.get(base) || 0) + 1;
     seen.set(base, next);
     return next === 1 ? base : `${base} (${next})`;

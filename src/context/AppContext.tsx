@@ -47,6 +47,8 @@ import {
   compareAccountNo,
   collectionEmailSubject,
   fillTemplate,
+  cellFromRow,
+  completeMapping,
   findColumn,
   hasOutstandingBalance,
   isPaidOrZeroBalance,
@@ -55,6 +57,7 @@ import {
   nowIso,
   parsePromiseFromReply,
   parseSignedAmount,
+  preferDetectedMapping,
   safeDate,
   splitEmailThread,
   todayIso,
@@ -447,6 +450,28 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
           return;
         }
         if (result.stale && result.data) {
+          const remoteRev = Number((result.data as PersistedAppData).revision || 0);
+          if (remoteRev !== Number(payload.revision || 0)) {
+            revisionRef.current = remoteRev;
+            setRevision(remoteRev);
+            void saveAppData({ ...payload, revision: remoteRev }).then((retry) => {
+              if (retry.ok) {
+                if (typeof retry.revision === 'number') {
+                  revisionRef.current = retry.revision;
+                  setRevision(retry.revision);
+                }
+                return;
+              }
+              if (retry.stale && retry.data) {
+                skipServerSave.current = true;
+                applyPersistedData(retry.data as PersistedAppData);
+                window.setTimeout(() => {
+                  skipServerSave.current = false;
+                }, 2000);
+              }
+            });
+            return;
+          }
           skipServerSave.current = true;
           applyPersistedData(result.data as PersistedAppData);
           window.setTimeout(() => {
@@ -1906,21 +1931,11 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
       assignedCollector: findColumn(headers, 'assignedCollector'),
       equipment: findColumn(headers, 'equipment'),
     };
-    const saved = importMappings[companyId] || {};
-    const next = { ...detected };
-    for (const [key, col] of Object.entries(saved)) {
-      if (col && headers.includes(col)) next[key] = col;
-    }
-    setMapping(next);
+    setMapping(preferDetectedMapping(detected, importMappings[companyId] || {}, rows));
   }
 
-  function value(row: Record<string, unknown>, key: string) {
-    const col = mapping[key];
-    if (!col) return '';
-    if (Object.prototype.hasOwnProperty.call(row, col)) return row[col];
-    const want = normalize(col);
-    const found = Object.keys(row).find((header) => normalize(header) === want);
-    return found ? row[found] : '';
+  function value(row: Record<string, unknown>, key: string, map: Mapping = mapping) {
+    return cellFromRow(row, map[key]);
   }
   function dateValue(raw: unknown) {
     return parseImportDate(raw);
@@ -1928,21 +1943,21 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
   function numberValue(raw: unknown) {
     return parseSignedAmount(raw);
   }
-  function mappedText(row: Record<string, unknown>, key: string) {
-    if (!mapping[key]) return undefined;
-    const text = String(value(row, key) ?? '').trim();
+  function mappedText(row: Record<string, unknown>, key: string, map: Mapping = mapping) {
+    if (!map[key]) return undefined;
+    const text = String(value(row, key, map) ?? '').trim();
     return text || undefined;
   }
-  function mappedNumber(row: Record<string, unknown>, key: string) {
-    if (!mapping[key]) return undefined;
-    const raw = value(row, key);
+  function mappedNumber(row: Record<string, unknown>, key: string, map: Mapping = mapping) {
+    if (!map[key]) return undefined;
+    const raw = value(row, key, map);
     if (raw === '' || raw == null) return undefined;
     if (!/[0-9]/.test(String(raw))) return undefined;
     return numberValue(raw);
   }
-  function mappedDate(row: Record<string, unknown>, key: string) {
-    if (!mapping[key]) return undefined;
-    const raw = value(row, key);
+  function mappedDate(row: Record<string, unknown>, key: string, map: Mapping = mapping) {
+    if (!map[key]) return undefined;
+    const raw = value(row, key, map);
     if (raw === '' || raw == null) return undefined;
     return dateValue(raw);
   }
@@ -2004,27 +2019,27 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
     ];
     return statuses.find((status) => normalize(status) === normalize(raw));
   }
-  function extrasFromRow(row: Record<string, unknown>): Partial<Customer> {
+  function extrasFromRow(row: Record<string, unknown>, map: Mapping = mapping): Partial<Customer> {
     const extras: Partial<Customer> = {};
-    const customerReference = mappedText(row, 'customerReference');
-    const servicePackage = mappedText(row, 'servicePackage');
-    const monthlySubscription = mappedNumber(row, 'monthlySubscription');
-    const originalOutstanding = mappedNumber(row, 'originalOutstanding');
-    const dueDate = mappedDate(row, 'dueDate');
-    const phone = mappedText(row, 'phone');
-    const whatsapp = mappedText(row, 'whatsapp');
-    const email = mappedText(row, 'email');
-    const language = mappedText(row, 'language');
-    const address = mappedText(row, 'address');
-    const suburb = mappedText(row, 'suburb');
-    const city = mappedText(row, 'city');
-    const province = mappedText(row, 'province');
-    const postalCode = mappedText(row, 'postalCode');
-    const nextFollowUp = mappedDate(row, 'nextFollowUp');
-    const assignedCollector = mappedText(row, 'assignedCollector');
-    const equipment = mappedText(row, 'equipment');
-    const preferredContact = parsePreferredContact(mappedText(row, 'preferredContact'));
-    const stageRaw = mappedText(row, 'collectionStage');
+    const customerReference = mappedText(row, 'customerReference', map);
+    const servicePackage = mappedText(row, 'servicePackage', map);
+    const monthlySubscription = mappedNumber(row, 'monthlySubscription', map);
+    const originalOutstanding = mappedNumber(row, 'originalOutstanding', map);
+    const dueDate = mappedDate(row, 'dueDate', map);
+    const phone = mappedText(row, 'phone', map);
+    const whatsapp = mappedText(row, 'whatsapp', map);
+    const email = mappedText(row, 'email', map);
+    const language = mappedText(row, 'language', map);
+    const address = mappedText(row, 'address', map);
+    const suburb = mappedText(row, 'suburb', map);
+    const city = mappedText(row, 'city', map);
+    const province = mappedText(row, 'province', map);
+    const postalCode = mappedText(row, 'postalCode', map);
+    const nextFollowUp = mappedDate(row, 'nextFollowUp', map);
+    const assignedCollector = mappedText(row, 'assignedCollector', map);
+    const equipment = mappedText(row, 'equipment', map);
+    const preferredContact = parsePreferredContact(mappedText(row, 'preferredContact', map));
+    const stageRaw = mappedText(row, 'collectionStage', map);
     const collectionStage = parseCollectionStage(stageRaw);
     const status = parseAccountStatus(stageRaw) || (
       collectionStage === 'Paid' || collectionStage === 'Closed'
@@ -2066,7 +2081,10 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
   }
 
   function commitImport() {
-    if (!mapping.accountNo || !mapping.name || !mapping.outstanding) {
+    const headers = importRows[0] ? Object.keys(importRows[0]) : [];
+    const activeMapping = completeMapping(mapping, headers);
+    setMapping(activeMapping);
+    if (!activeMapping.accountNo || !activeMapping.name || !activeMapping.outstanding) {
       setImportResult('Please map Account Number, Client Name and Outstanding Amount before importing.');
       toastError('Please map required columns before importing.');
       return;
@@ -2088,8 +2106,8 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
     const dedupedRows: Record<string, unknown>[] = [];
     const rowByAccount = new Map<string, Record<string, unknown>>();
     for (const row of importRows) {
-      const key = normalizeAccountKey(value(row, 'accountNo'));
-      const name = String(value(row, 'name')).trim();
+      const key = normalizeAccountKey(value(row, 'accountNo', activeMapping));
+      const name = String(value(row, 'name', activeMapping)).trim();
       if (!key || !name) {
         errors++;
         continue;
@@ -2099,17 +2117,17 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
     for (const row of rowByAccount.values()) dedupedRows.push(row);
 
     for (const row of dedupedRows) {
-      const accountRaw = value(row, 'accountNo');
+      const accountRaw = value(row, 'accountNo', activeMapping);
       const accountKey = normalizeAccountKey(accountRaw);
       const account = String(accountRaw).trim();
-      const name = String(value(row, 'name')).trim();
+      const name = String(value(row, 'name', activeMapping)).trim();
       if (!accountKey || !name) {
         errors++;
         continue;
       }
       seen.add(accountKey);
 
-      const amount = numberValue(value(row, 'outstanding'));
+      const amount = numberValue(value(row, 'outstanding', activeMapping));
       // Prefer an active match; fall back to archived so we update instead of duplicating
       let ix = next.findIndex(
         (c) =>
@@ -2123,11 +2141,11 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
         );
       }
 
-      const extras = extrasFromRow(row);
+      const extras = extrasFromRow(row, activeMapping);
       if (ix >= 0) {
         const prev = next[ix];
         const prevAmount = prev.outstanding;
-        next[ix] = {
+        const nextCustomer: Customer = {
           ...prev,
           ...extras,
           name,
@@ -2138,6 +2156,10 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
           customerReference: extras.customerReference || prev.customerReference,
           servicePackage: extras.servicePackage || prev.servicePackage,
           monthlySubscription: extras.monthlySubscription ?? prev.monthlySubscription,
+          phone: extras.phone || prev.phone,
+          whatsapp: extras.whatsapp || extras.phone || prev.whatsapp,
+          email: extras.email || prev.email,
+          address: extras.address || prev.address,
           status:
             extras.status ||
             (!hasOutstandingBalance(amount)
@@ -2147,15 +2169,24 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
                 : prev.status),
           collectionStage: extras.collectionStage || (!hasOutstandingBalance(amount) ? 'Paid' : prev.collectionStage),
         };
+        next[ix] = nextCustomer;
         updated++;
-        if (prevAmount !== amount) {
+        const summaryChanged =
+          prevAmount !== amount ||
+          nextCustomer.servicePackage !== prev.servicePackage ||
+          nextCustomer.monthlySubscription !== prev.monthlySubscription ||
+          nextCustomer.dueDate !== prev.dueDate ||
+          nextCustomer.customerReference !== prev.customerReference;
+        if (summaryChanged) {
           activityBuffer.push({
             id: uid('act'),
             companyId,
             customerId: prev.id,
             user: actorName(),
             action: 'Imported from Excel',
-            description: `Balance updated by Excel Import #${batchId} from ${money(prevAmount)} to ${money(amount)}.`,
+            description: `Account summary updated by Excel Import #${batchId}${
+              prevAmount !== amount ? ` from ${money(prevAmount)} to ${money(amount)}` : ''
+            }.`,
             createdAt: nowIso(),
           });
         }
@@ -2227,12 +2258,12 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
     ]);
     if (activityBuffer.length) setActivities((prev) => [...activityBuffer, ...prev]);
     setImportResult(
-      `Imported into ${company.name}: ${created} new, ${updated} balances updated, ${cleared} not in this file, ${errors} skipped.`,
+      `Imported into ${company.name}: ${created} new, ${updated} accounts updated, ${cleared} not in this file, ${errors} skipped.`,
     );
-    setImportMappings((prev) => ({ ...prev, [companyId]: mapping }));
+    setImportMappings((prev) => ({ ...prev, [companyId]: activeMapping }));
     toastSuccess(
       updated && !created
-        ? `Updated ${updated} existing account balance${updated === 1 ? '' : 's'}.`
+        ? `Updated ${updated} existing account${updated === 1 ? '' : 's'}.`
         : 'Import completed successfully.',
     );
   }

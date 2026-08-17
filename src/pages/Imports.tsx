@@ -14,6 +14,7 @@ import { ConfirmModal, MoreActionsMenu } from '../components/CustomerTable';
 import { EmptyState, PageHero, Rule } from '../components/ui';
 import { useApp } from '../context/AppContext';
 import { useAuth } from '../context/AuthContext';
+import { cellFromRow } from '../utils';
 import type { ImportBatch } from '../types';
 
 const mappingSections: { title: string; fields: [string, string][] }[] = [
@@ -88,7 +89,7 @@ export default function Imports() {
   function mappedPreview(key: string) {
     const col = mapping[key];
     if (!col || !previewRow) return '—';
-    const text = String(previewRow[col] ?? '').trim();
+    const text = String(cellFromRow(previewRow, col) ?? '').trim();
     return text || '—';
   }
 

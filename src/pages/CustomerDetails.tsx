@@ -126,12 +126,13 @@ export default function CustomerDetails() {
     deleteRecovery,
     switchCompany,
     companyId,
+    customers,
     loading,
     syncInbox,
     markCommunicationRead,
   } = useApp();
 
-  const customer = getCustomer(customerId || '');
+  const customer = customers.find((item) => item.id === customerId) || getCustomer(customerId || '');
   const company = customer ? getCompany(customer.companyId) : undefined;
 
   useEffect(() => {
@@ -221,21 +222,26 @@ export default function CustomerDetails() {
   }, [payments, customer?.outstanding]);
 
   const overdue = customer ? daysOverdue(customer.dueDate) : 0;
+  const lastPayment = useMemo(() => {
+    return [...payments].sort((a, b) =>
+      String(b.createdAt || b.paymentDate).localeCompare(String(a.createdAt || a.paymentDate)),
+    )[0];
+  }, [payments]);
+
+  if (loading && !customer) {
+    return (
+      <Stack>
+        <Skeleton height={90} radius="lg" />
+        <Skeleton height={240} radius="lg" />
+      </Stack>
+    );
+  }
 
   if (!customer) {
     return (
       <Card className="card" radius="lg" p="lg">
         <EmptyState title="Customer not found" description="This customer may have been archived or does not exist." />
       </Card>
-    );
-  }
-
-  if (loading) {
-    return (
-      <Stack>
-        <Skeleton height={90} radius="lg" />
-        <Skeleton height={240} radius="lg" />
-      </Stack>
     );
   }
 
@@ -415,6 +421,14 @@ export default function CustomerDetails() {
                 <Info label="Due date" value={safeDate(customer.dueDate)} />
                 <Info label="Days overdue" value={String(overdue)} />
                 <Info label="Collection status" value={customer.collectionStage || customer.status} />
+                <Info
+                  label="Last payment"
+                  value={
+                    lastPayment
+                      ? `${money(lastPayment.amount)} · ${safeDate(lastPayment.paymentDate)}`
+                      : '—'
+                  }
+                />
               </SimpleGrid>
             </Card>
 

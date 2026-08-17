@@ -47,15 +47,6 @@ export async function saveAppData(
   try {
     const token = getStoredToken();
     if (!token) return { ok: false, error: 'Not signed in.' };
-    const remote = await fetchAppData();
-    if (remote.ok && Number(remote.data.revision || 0) !== Number(payload.revision || 0)) {
-      return {
-        ok: false,
-        stale: true,
-        error: 'Workspace was updated elsewhere.',
-        data: remote.data,
-      };
-    }
     const res = await fetch(apiUrl('/api/data'), {
       method: 'PUT',
       headers: {

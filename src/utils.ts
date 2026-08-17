@@ -93,74 +93,7 @@ export const daysOverdue = (dueDate?: string) => {
   }
 };
 
-export const normalize = (v: string) => v.toLowerCase().replace(/[^a-z0-9]/g, '');
-
-export const aliases: Record<string, string[]> = {
-  accountNo: ['account', 'accountno', 'accountnumber', 'clientno', 'customerno', 'customerid', 'id'],
-  name: ['client', 'clientname', 'customer', 'customername', 'name', 'fullname'],
-  customerReference: ['customerreference', 'reference', 'ref', 'clientref'],
-  servicePackage: [
-    'service',
-    'servicepackage',
-    'servicetype',
-    'servicedescription',
-    'packagename',
-    'package',
-    'product',
-    'productname',
-    'plan',
-    'profile',
-    'deal',
-  ],
-  monthlySubscription: [
-    'monthlysubscription',
-    'subscription',
-    'monthlyfee',
-    'monthlycharge',
-    'monthlyamount',
-    'monthlycost',
-    'recurring',
-    'mrc',
-    'debitorder',
-    'packagefee',
-  ],
-  originalOutstanding: ['originaloutstanding', 'originalbalance', 'originalamount', 'openingbalance', 'openingoutstanding'],
-  outstanding: ['outstanding', 'currentoutstanding', 'amountoutstanding', 'balance', 'outstandingamount', 'amountdue', 'arrears'],
-  dueDate: ['duedate', 'date due', 'paymentdate', 'due'],
-  collectionStage: ['collectionstatus', 'collectionstage', 'status', 'accountstatus'],
-  phone: ['phone', 'mobile', 'cell', 'cellphone', 'telephone', 'contactnumber'],
-  whatsapp: ['whatsapp', 'whatsappnumber', 'wa'],
-  email: ['email', 'emailaddress'],
-  preferredContact: ['preferredcontact', 'preferredchannel', 'contactmethod'],
-  language: ['language', 'lang', 'locale'],
-  address: ['address', 'installationaddress', 'serviceaddress'],
-  suburb: ['suburb', 'area', 'township'],
-  city: ['city', 'town'],
-  province: ['province', 'state', 'region'],
-  postalCode: ['postalcode', 'postcode', 'zip', 'zipcode'],
-  nextFollowUp: ['nextfollowup', 'followup', 'followupdate', 'nextaction'],
-  assignedCollector: ['assignedcollector', 'collector', 'agent', 'assignedto'],
-  equipment: ['equipment', 'equipmentsummary', 'device', 'cpe', 'antenna'],
-};
-
-export function findColumn(headers: string[], key: string) {
-  const wanted = (aliases[key] || [key]).map(normalize).filter(Boolean);
-  const exact = headers.find((h) => wanted.includes(normalize(h)));
-  if (exact) return exact;
-  const scored = headers
-    .map((header) => {
-      const n = normalize(header);
-      let score = 0;
-      for (const alias of wanted) {
-        if (alias.length < 8) continue;
-        if (n.includes(alias) || alias.includes(n)) score = Math.max(score, alias.length);
-      }
-      return { header, score };
-    })
-    .filter((item) => item.score > 0)
-    .sort((a, b) => b.score - a.score);
-  return scored[0]?.header || '';
-}
+export { aliases, cellFromRow, completeMapping, findColumn, normalize, preferDetectedMapping } from '../shared/import-columns.js';
 
 export function uid(prefix: string) {
   return `${prefix}-${Date.now()}-${Math.random().toString(36).slice(2, 7)}`;

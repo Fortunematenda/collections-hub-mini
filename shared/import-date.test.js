@@ -9,3 +9,9 @@ test('parses South African day/month dates instead of defaulting to today', () =
   assert.equal(parseImportDate('32/13/2026'), undefined);
   assert.equal(parseImportDate(''), undefined);
 });
+
+test('parses Excel month-name due dates', () => {
+  assert.equal(parseImportDate('17 Aug 2025'), '2025-08-17');
+  assert.equal(parseImportDate('17-Aug-25'), '2025-08-17');
+  assert.equal(parseImportDate('Aug 17, 2025'), '2025-08-17');
+});
