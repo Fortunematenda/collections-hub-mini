@@ -1,4 +1,5 @@
 import { parsePromiseFromReply, splitEmailThread, todayIso } from '../../shared/email-promise.js';
+import { amountOwed, hasOutstandingBalance } from '../../shared/balance.js';
 
 function uid(prefix) {
   return `${prefix}-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 8)}`;
@@ -16,7 +17,7 @@ function safeDate(value) {
 }
 
 function isPaidOrZero(customer) {
-  return customer?.status === 'Paid' || customer?.status === 'Cancelled' || Number(customer?.outstanding || 0) <= 0;
+  return customer?.status === 'Cancelled' || !hasOutstandingBalance(customer?.outstanding);
 }
 
 export function applyEmailPromises(store) {
@@ -57,7 +58,7 @@ export function applyEmailPromises(store) {
       id: existingIndex >= 0 ? promises[existingIndex].id : uid('pr'),
       companyId: customer.companyId,
       customerId: customer.id,
-      amount: customer.outstanding,
+      amount: amountOwed(customer.outstanding),
       promiseDate: parsed.date,
       createdAt: existingIndex >= 0 ? promises[existingIndex].createdAt : new Date().toISOString(),
       status: 'Pending',
@@ -74,7 +75,7 @@ export function applyEmailPromises(store) {
       status: 'Promise to Pay',
       collectionStage: 'Promise to Pay',
       promisedDate: parsed.date,
-      promisedAmount: customer.outstanding,
+      promisedAmount: amountOwed(customer.outstanding),
       nextFollowUp: parsed.date,
       lastContact: `Promise · ${safeDate(parsed.date)}`,
     };
@@ -89,7 +90,7 @@ export function applyEmailPromises(store) {
       followUpDate: parsed.date,
       channel: 'Any',
       assignedUser: customer.assignedCollector || 'System',
-      notes: `Follow up on promise of ${money(customer.outstanding)}`,
+      notes: `Follow up on promise of ${money(amountOwed(customer.outstanding))}`,
       createdAt: followIndex >= 0 ? followUps[followIndex].createdAt : new Date().toISOString(),
     };
     if (followIndex >= 0) followUps[followIndex] = { ...followUps[followIndex], ...follow };
@@ -101,7 +102,7 @@ export function applyEmailPromises(store) {
       customerId: customer.id,
       user: 'System',
       action: existingIndex >= 0 ? 'Promise updated' : 'Promise created',
-      description: `Promise to pay ${money(customer.outstanding)} recorded for ${safeDate(parsed.date)}.`,
+      description: `Promise to pay ${money(amountOwed(customer.outstanding))} recorded for ${safeDate(parsed.date)}.`,
       createdAt: new Date().toISOString(),
     });
     created += 1;

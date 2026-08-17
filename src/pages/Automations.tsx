@@ -4,7 +4,7 @@ import { CalendarClock, Pause, Play, Plus, ShieldCheck, Trash2, Workflow } from 
 import { EmptyState, Metric, PageHero } from '../components/ui';
 import { useApp } from '../context/AppContext';
 import type { AutomationAction, AutomationRule, AutomationTrigger } from '../types';
-import { money, nowIso, uid } from '../utils';
+import { amountOwed, hasOutstandingBalance, money, nowIso, uid } from '../utils';
 
 const triggers: AutomationTrigger[] = ['Before due date','Invoice overdue','Promise due','Promise broken','Payment received','Communication failed'];
 const actions: AutomationAction[] = ['Send WhatsApp','Send email','Create follow-up','Notify manager','Request suspension','Start recovery'];
@@ -14,7 +14,7 @@ export default function Automations() {
   const { company, companyId, companyCustomers, automationRules, saveAutomationRule, removeAutomationRule } = useApp();
   const rules = useMemo(() => automationRules.filter((x) => x.companyId === companyId), [automationRules, companyId]);
   const [editing, setEditing] = useState<AutomationRule | null>(null);
-  const eligible = companyCustomers.filter((x) => x.outstanding > 0);
+  const eligible = companyCustomers.filter((x) => hasOutstandingBalance(x.outstanding));
   const protectedActions = rules.filter((x) => x.active && x.requiresApproval).length;
   function set<K extends keyof AutomationRule>(key: K, value: AutomationRule[K]) { setEditing((x) => x ? { ...x, [key]: value } : x); }
   function save() { if (!editing || !editing.name.trim()) return; saveAutomationRule(editing); setEditing(null); }
@@ -22,7 +22,7 @@ export default function Automations() {
   return <>
     <PageHero eyebrow={<><Workflow size={13}/>{company.name}</>} title="Collection automations" description="Built-in server jobs already create Promise to Pay from email replies and mark overdue promises as broken. Saved rules below are a draft catalogue — they are not executed yet." actions={<Button leftSection={<Plus size={15}/>} onClick={() => setEditing(blank(companyId))} disabled={!companyId}>New draft rule</Button>} />
     <div className="metric-grid">
-      <Metric label="Draft rules" value={String(rules.filter((x) => x.active).length)} foot={`${rules.length} saved`} icon={Play}/><Metric label="Eligible accounts" value={String(eligible.length)} foot={money(eligible.reduce((s,x)=>s+x.outstanding,0))} icon={Workflow}/><Metric label="Approval flagged" value={String(protectedActions)} foot="Not yet enforced" icon={ShieldCheck}/><Metric label="Built-in jobs" value="2 min" foot="Email PTP + overdue promises" icon={CalendarClock}/>
+      <Metric label="Draft rules" value={String(rules.filter((x) => x.active).length)} foot={`${rules.length} saved`} icon={Play}/><Metric label="Eligible accounts" value={String(eligible.length)} foot={money(eligible.reduce((s,x)=>s+amountOwed(x.outstanding),0))} icon={Workflow}/><Metric label="Approval flagged" value={String(protectedActions)} foot="Not yet enforced" icon={ShieldCheck}/><Metric label="Built-in jobs" value="2 min" foot="Email PTP + overdue promises" icon={CalendarClock}/>
     </div>
     <Card className="card" radius="lg" p={0}>
       <div className="automation-table-wrap"><Table striped highlightOnHover verticalSpacing="md"><Table.Thead><Table.Tr><Table.Th>Rule</Table.Th><Table.Th>Trigger</Table.Th><Table.Th>Action</Table.Th><Table.Th>Minimum balance</Table.Th><Table.Th>Protection</Table.Th><Table.Th>Status</Table.Th><Table.Th/></Table.Tr></Table.Thead><Table.Tbody>{rules.map((r)=><Table.Tr key={r.id}><Table.Td><Text fw={650} size="sm">{r.name}</Text><Text size="xs" c="dimmed">{Math.abs(r.daysOffset)} day offset</Text></Table.Td><Table.Td>{r.trigger}</Table.Td><Table.Td>{r.action}</Table.Td><Table.Td>{money(r.minimumBalance)}</Table.Td><Table.Td><Badge color={r.requiresApproval?'orange':'gray'} variant="light">{r.requiresApproval?'Approval':'Automatic'}</Badge></Table.Td><Table.Td><Badge color={r.active?'teal':'gray'}>{r.active?'Active':'Paused'}</Badge></Table.Td><Table.Td><Group gap={4} justify="flex-end"><ActionIcon variant="subtle" aria-label={r.active?'Pause':'Activate'} onClick={()=>saveAutomationRule({...r,active:!r.active})}>{r.active?<Pause size={15}/>:<Play size={15}/>}</ActionIcon><Button size="compact-xs" variant="subtle" onClick={()=>setEditing(r)}>Edit</Button><ActionIcon color="red" variant="subtle" aria-label="Delete" onClick={()=>removeAutomationRule(r.id)}><Trash2 size={15}/></ActionIcon></Group></Table.Td></Table.Tr>)}</Table.Tbody></Table></div>

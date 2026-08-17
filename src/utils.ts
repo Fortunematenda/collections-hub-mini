@@ -1,5 +1,8 @@
 import { addDays, differenceInCalendarDays, format, isValid, lastDayOfMonth, nextDay, parse, parseISO, startOfDay } from 'date-fns';
 import type { AccountStatus, RecoveryStatus } from './types';
+import { amountOwed, applyPaymentToBalance, hasCreditBalance, hasOutstandingBalance, isClearedOrCredit } from '../shared/balance.js';
+
+export { amountOwed, applyPaymentToBalance, hasCreditBalance, hasOutstandingBalance, isClearedOrCredit };
 
 export const statusColor: Record<AccountStatus, string> = {
   'Payment Due': 'yellow',
@@ -30,13 +33,17 @@ export const recoveryColor: Record<RecoveryStatus, string> = {
 export const money = (n: number) =>
   new Intl.NumberFormat('en-ZA', { style: 'currency', currency: 'ZAR', maximumFractionDigits: 0 }).format(n || 0);
 
-export const amountClass = (n: number) => (n < 0 ? 'amount amount-negative' : 'amount');
+export const amountClass = (n: number) => {
+  if (n < 0) return 'amount amount-negative';
+  if (n > 0) return 'amount amount-credit';
+  return 'amount';
+};
 
 export function compareAccountNo(a?: string, b?: string) {
   return String(a || '').localeCompare(String(b || ''), undefined, { numeric: true, sensitivity: 'base' });
 }
 
-/** Parse Excel/CSV money, keeping credits as negative (e.g. -120, (120), 120-). */
+/** Parse Excel/CSV money, keeping the file's sign: negative = owing, positive = credit. */
 export function parseSignedAmount(raw: unknown) {
   if (typeof raw === 'number' && Number.isFinite(raw)) return raw;
   const text = String(raw ?? '').trim();
@@ -92,9 +99,32 @@ export const aliases: Record<string, string[]> = {
   accountNo: ['account', 'accountno', 'accountnumber', 'clientno', 'customerno', 'customerid', 'id'],
   name: ['client', 'clientname', 'customer', 'customername', 'name', 'fullname'],
   customerReference: ['customerreference', 'reference', 'ref', 'clientref'],
-  servicePackage: ['service', 'servicepackage', 'package', 'product', 'plan'],
-  monthlySubscription: ['monthlysubscription', 'subscription', 'monthlyfee', 'recurring'],
-  originalOutstanding: ['originaloutstanding', 'originalbalance', 'originalamount'],
+  servicePackage: [
+    'service',
+    'servicepackage',
+    'servicetype',
+    'servicedescription',
+    'packagename',
+    'package',
+    'product',
+    'productname',
+    'plan',
+    'profile',
+    'deal',
+  ],
+  monthlySubscription: [
+    'monthlysubscription',
+    'subscription',
+    'monthlyfee',
+    'monthlycharge',
+    'monthlyamount',
+    'monthlycost',
+    'recurring',
+    'mrc',
+    'debitorder',
+    'packagefee',
+  ],
+  originalOutstanding: ['originaloutstanding', 'originalbalance', 'originalamount', 'openingbalance', 'openingoutstanding'],
   outstanding: ['outstanding', 'currentoutstanding', 'amountoutstanding', 'balance', 'outstandingamount', 'amountdue', 'arrears'],
   dueDate: ['duedate', 'date due', 'paymentdate', 'due'],
   collectionStage: ['collectionstatus', 'collectionstage', 'status', 'accountstatus'],
@@ -114,8 +144,22 @@ export const aliases: Record<string, string[]> = {
 };
 
 export function findColumn(headers: string[], key: string) {
-  const wanted = (aliases[key] || [key]).map(normalize);
-  return headers.find((h) => wanted.includes(normalize(h))) || '';
+  const wanted = (aliases[key] || [key]).map(normalize).filter(Boolean);
+  const exact = headers.find((h) => wanted.includes(normalize(h)));
+  if (exact) return exact;
+  const scored = headers
+    .map((header) => {
+      const n = normalize(header);
+      let score = 0;
+      for (const alias of wanted) {
+        if (alias.length < 8) continue;
+        if (n.includes(alias) || alias.includes(n)) score = Math.max(score, alias.length);
+      }
+      return { header, score };
+    })
+    .filter((item) => item.score > 0)
+    .sort((a, b) => b.score - a.score);
+  return scored[0]?.header || '';
 }
 
 export function uid(prefix: string) {
@@ -164,9 +208,10 @@ export function fillTemplate(
   return out;
 }
 
-/** Paid / R 0 accounts must not get collection emails — they look like spam and trigger inbound 550s. */
+/** Paid, credit, or R 0 accounts must not get collection emails. Negative balances are outstanding. */
 export function isPaidOrZeroBalance(customer: { outstanding?: number; status?: string }) {
-  return customer.status === 'Paid' || Number(customer.outstanding || 0) <= 0;
+  if (customer.status === 'Cancelled') return true;
+  return !hasOutstandingBalance(customer.outstanding);
 }
 
 export function collectionEmailSubject(accountNo: string, companyName?: string) {

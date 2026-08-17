@@ -39,8 +39,11 @@ import type { ImportBatch, PaymentPromise, RecoveryJob } from '../types';
 import { CompanyFormModal, CustomerFormModal, PromiseToPayModal } from '../modals/CoreModals';
 import { CreateRecoveryJobModal } from '../modals/ActionModals';
 import {
+  amountOwed,
   compareAccountNo,
   daysOverdue,
+  hasCreditBalance,
+  hasOutstandingBalance,
   initials,
   money,
   normalizeTab,
@@ -114,7 +117,8 @@ export default function CompanyDetails() {
     () => customers.filter((c) => c.companyId === company?.id && !c.archived),
     [customers, company?.id],
   );
-  const outstanding = companyCustomers.filter((c) => c.outstanding > 0 && c.status !== 'Paid');
+  const outstanding = companyCustomers.filter((c) => hasOutstandingBalance(c.outstanding));
+  const outstandingTotal = outstanding.reduce((s, c) => s + amountOwed(c.outstanding), 0);
   const contacted = companyCustomers.filter((c) => c.lastContact && c.lastContact !== 'Not contacted').length;
   const companyPromises = promises.filter((p) => p.companyId === company?.id);
   const paid = companyCustomers.filter((c) => c.status === 'Paid').length;
@@ -131,13 +135,14 @@ export default function CompanyDetails() {
     const q = search.toLowerCase();
     if (q) list = list.filter((c) => [c.name, c.accountNo, c.phone, c.email].some((v) => (v || '').toLowerCase().includes(q)));
     if (statusFilter && statusFilter !== 'All statuses') list = list.filter((c) => c.status === statusFilter);
-    if (balanceFilter === 'Has balance') list = list.filter((c) => c.outstanding > 0);
-    if (balanceFilter === 'Cleared') list = list.filter((c) => c.outstanding <= 0);
+    if (balanceFilter === 'Has balance') list = list.filter((c) => hasOutstandingBalance(c.outstanding));
+    if (balanceFilter === 'In credit') list = list.filter((c) => hasCreditBalance(c.outstanding));
+    if (balanceFilter === 'Cleared') list = list.filter((c) => c.outstanding === 0);
     if (followFilter === 'Due soon') list = list.filter((c) => !!c.nextFollowUp);
     if (followFilter === 'No follow-up') list = list.filter((c) => !c.nextFollowUp);
     if (sortBy === 'id') list.sort((a, b) => compareAccountNo(a.accountNo, b.accountNo));
-    if (sortBy === 'outstanding-desc') list.sort((a, b) => b.outstanding - a.outstanding);
-    if (sortBy === 'outstanding-asc') list.sort((a, b) => a.outstanding - b.outstanding);
+    if (sortBy === 'outstanding-desc') list.sort((a, b) => a.outstanding - b.outstanding);
+    if (sortBy === 'outstanding-asc') list.sort((a, b) => b.outstanding - a.outstanding);
     if (sortBy === 'name') list.sort((a, b) => a.name.localeCompare(b.name));
     if (sortBy === 'overdue') list.sort((a, b) => daysOverdue(b.dueDate) - daysOverdue(a.dueDate));
     return list;
@@ -234,7 +239,7 @@ export default function CompanyDetails() {
 
       <div className="metric-grid metric-grid-7">
         <Metric label="Outstanding customers" value={String(outstanding.length)} foot="Active balances" icon={Users} />
-        <Metric label="Total outstanding" value={money(outstanding.reduce((s, c) => s + c.outstanding, 0))} foot="Company portfolio" icon={Building2} />
+        <Metric label="Total outstanding" value={money(outstandingTotal)} foot="Company portfolio" icon={Building2} />
         <Metric label="Customers contacted" value={String(contacted)} foot="Any contact logged" icon={Phone} />
         <Metric label="Promises to pay" value={String(companyPromises.filter((p) => p.status === 'Pending').length)} foot="Pending" icon={CalendarClock} />
         <Metric label="Payments / cleared" value={String(paid)} foot="Paid accounts" icon={FileSpreadsheet} />
@@ -279,7 +284,7 @@ export default function CompanyDetails() {
                 Outstanding summary
               </div>
               <Text size="sm" mt="sm">
-                {outstanding.length} customers · {money(outstanding.reduce((s, c) => s + c.outstanding, 0))}
+                {outstanding.length} customers · {money(outstandingTotal)}
               </Text>
             </Card>
             <Card className="card" radius="lg" p="lg">
@@ -340,7 +345,7 @@ export default function CompanyDetails() {
               <div className="toolbar-left" style={{ flex: 1 }}>
                 <TextInput className="search-wrap" placeholder="Search customers..." value={search} onChange={(e) => setSearch(e.currentTarget.value)} />
                 <Select className="status-filter" data={['All statuses', 'Payment Due', 'Follow-up', 'Promise to Pay', 'Paid', 'Unresponsive', 'Cancelled', 'Recovery Required']} value={statusFilter} onChange={setStatusFilter} />
-                <Select data={['All balances', 'Has balance', 'Cleared']} value={balanceFilter} onChange={setBalanceFilter} />
+                <Select data={['All balances', 'Has balance', 'In credit', 'Cleared']} value={balanceFilter} onChange={setBalanceFilter} />
                 <Select data={['All follow-ups', 'Due soon', 'No follow-up']} value={followFilter} onChange={setFollowFilter} />
                 <Select data={[{ value: 'id', label: 'Customer ID' }, { value: 'outstanding-desc', label: 'Highest balance' }, { value: 'outstanding-asc', label: 'Lowest balance' }, { value: 'name', label: 'Name' }, { value: 'overdue', label: 'Most overdue' }]} value={sortBy} onChange={setSortBy} />
               </div>

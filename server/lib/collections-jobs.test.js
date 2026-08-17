@@ -10,7 +10,7 @@ test('first run seeds historical mail and does not create promises', () => {
         id: 'c1',
         companyId: 'co1',
         status: 'Overdue',
-        outstanding: 100,
+        outstanding: -100,
         assignedCollector: 'Ada',
       },
     ],
@@ -42,7 +42,7 @@ test('retries a date-only reply that was marked none', () => {
         id: 'c1',
         companyId: 'co1',
         status: 'Overdue',
-        outstanding: 250,
+        outstanding: -250,
         assignedCollector: 'Ada',
       },
     ],
@@ -73,7 +73,7 @@ test('creates a promise from a new email after seed', () => {
         id: 'c1',
         companyId: 'co1',
         status: 'Overdue',
-        outstanding: 250,
+        outstanding: -250,
         assignedCollector: 'Ada',
       },
     ],
@@ -101,7 +101,7 @@ test('marks overdue pending promises as broken', () => {
   const result = breakOverduePromises(
     {
       promises: [{ id: 'p1', customerId: 'c1', companyId: 'co1', status: 'Pending', promiseDate: '2026-08-01', amount: 50 }],
-      customers: [{ id: 'c1', companyId: 'co1', status: 'Promise to Pay', outstanding: 50 }],
+      customers: [{ id: 'c1', companyId: 'co1', status: 'Promise to Pay', outstanding: -50 }],
       activities: [],
     },
     '2026-08-16',
@@ -109,4 +109,33 @@ test('marks overdue pending promises as broken', () => {
   assert.equal(result.broken, 1);
   assert.equal(result.store.promises[0].status, 'Broken');
   assert.equal(result.store.customers[0].status, 'Follow-up');
+});
+
+test('credit balances do not create payment promises', () => {
+  const result = applyEmailPromises({
+    promiseEmailSeeded: true,
+    customers: [
+      {
+        id: 'c1',
+        companyId: 'co1',
+        status: 'Paid',
+        outstanding: 80,
+        assignedCollector: 'Ada',
+      },
+    ],
+    communications: [
+      {
+        id: 'cm-credit',
+        channel: 'Email',
+        direction: 'Incoming',
+        customerId: 'c1',
+        message: 'I will pay on Friday',
+      },
+    ],
+    promises: [],
+    followUps: [],
+    activities: [],
+  });
+  assert.equal(result.created, 0);
+  assert.equal(result.store.promises.length, 0);
 });

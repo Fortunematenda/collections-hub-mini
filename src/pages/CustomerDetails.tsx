@@ -51,6 +51,8 @@ import type { Communication, Equipment, FollowUp, Note, NoteType, Payment, Payme
 import {
   actorName,
   amountClass,
+  hasCreditBalance,
+  hasOutstandingBalance,
   daysOverdue,
   fullAddress,
   initials,
@@ -204,6 +206,20 @@ export default function CustomerDetails() {
     return list.filter((n) => n.type === (noteFilter as NoteType));
   }, [notes, noteFilter]);
 
+  const paymentBalances = useMemo(() => {
+    const chronological = [...payments].sort((a, b) =>
+      String(a.createdAt || a.paymentDate).localeCompare(String(b.createdAt || b.paymentDate)),
+    );
+    const totalPaid = chronological.reduce((sum, item) => sum + Math.abs(Number(item.amount) || 0), 0);
+    let running = Number(customer?.outstanding || 0) - totalPaid;
+    const map = new Map<string, number>();
+    for (const item of chronological) {
+      running += Math.abs(Number(item.amount) || 0);
+      map.set(item.id, item.balanceAfter ?? running);
+    }
+    return map;
+  }, [payments, customer?.outstanding]);
+
   const overdue = customer ? daysOverdue(customer.dueDate) : 0;
 
   if (!customer) {
@@ -241,6 +257,15 @@ export default function CustomerDetails() {
               </div>
               <div className="customer-detail-meta">
                 <span className={`customer-detail-balance ${amountClass(customer.outstanding)}`}>{money(customer.outstanding)}</span>
+                {hasOutstandingBalance(customer.outstanding) ? (
+                  <Badge size="sm" variant="light" color="red">
+                    Outstanding
+                  </Badge>
+                ) : hasCreditBalance(customer.outstanding) ? (
+                  <Badge size="sm" variant="light" color="teal">
+                    Credit
+                  </Badge>
+                ) : null}
                 <span className={overdue > 0 ? 'customer-detail-overdue' : 'customer-detail-muted'}>
                   {overdue} days overdue
                 </span>
@@ -384,9 +409,9 @@ export default function CustomerDetails() {
                 <Info label="Account number" value={customer.accountNo} />
                 <Info label="Customer reference" value={customer.customerReference || '—'} />
                 <Info label="Service / package" value={customer.servicePackage || '—'} />
-                <Info label="Monthly subscription" value={customer.monthlySubscription ? money(customer.monthlySubscription) : '—'} />
-                <Info label="Original outstanding" value={money(customer.originalOutstanding ?? customer.outstanding)} />
-                <Info label="Current outstanding" value={money(customer.outstanding)} />
+                <Info label="Monthly subscription" value={customer.monthlySubscription == null ? '—' : money(customer.monthlySubscription)} />
+                <Info label="Original balance" value={money(customer.originalOutstanding ?? customer.outstanding)} />
+                <Info label="Current balance" value={money(customer.outstanding)} />
                 <Info label="Due date" value={safeDate(customer.dueDate)} />
                 <Info label="Days overdue" value={String(overdue)} />
                 <Info label="Collection status" value={customer.collectionStage || customer.status} />
@@ -758,9 +783,10 @@ export default function CustomerDetails() {
                   <Table.Tr>
                     <Table.Th>Payment date</Table.Th>
                     <Table.Th>Amount</Table.Th>
+                    <Table.Th>Balance after</Table.Th>
+                    <Table.Th>Recorded by</Table.Th>
                     <Table.Th>Reference</Table.Th>
                     <Table.Th>Method</Table.Th>
-                    <Table.Th>Recorded by</Table.Th>
                     <Table.Th>Notes</Table.Th>
                     <Table.Th />
                   </Table.Tr>
@@ -770,9 +796,14 @@ export default function CustomerDetails() {
                     <Table.Tr key={p.id}>
                       <Table.Td>{safeDate(p.paymentDate)}</Table.Td>
                       <Table.Td>{money(p.amount)}</Table.Td>
+                      <Table.Td>
+                        <span className={amountClass(paymentBalances.get(p.id) ?? customer.outstanding)}>
+                          {money(paymentBalances.get(p.id) ?? customer.outstanding)}
+                        </span>
+                      </Table.Td>
+                      <Table.Td>{p.recordedBy || '—'}</Table.Td>
                       <Table.Td>{p.reference || '—'}</Table.Td>
                       <Table.Td>{p.method || '—'}</Table.Td>
-                      <Table.Td>{p.recordedBy}</Table.Td>
                       <Table.Td>{p.notes || '—'}</Table.Td>
                       <Table.Td>
                         <RowActionsMenu
@@ -783,7 +814,7 @@ export default function CustomerDetails() {
                           onDelete={() =>
                             askDelete({
                               title: 'Delete payment',
-                              message: `Remove the payment of ${money(p.amount)} recorded on ${safeDate(p.paymentDate)}? The amount will be added back to the outstanding balance.`,
+                              message: `Remove the payment of ${money(p.amount)} recorded by ${p.recordedBy || 'a user'} on ${safeDate(p.paymentDate)}? The outstanding balance will be restored.`,
                               confirmLabel: 'Delete payment',
                               run: () => deletePayment(p.id),
                             })
@@ -794,6 +825,41 @@ export default function CustomerDetails() {
                   ))}
                 </Table.Tbody>
               </Table>
+            </div>
+            <div className="mobile-account-list">
+              {payments.map((p) => (
+                <div className="mobile-account-card" key={p.id}>
+                  <Group justify="space-between" align="flex-start">
+                    <div>
+                      <Text size="xs" fw={650}>
+                        {money(p.amount)}
+                      </Text>
+                      <Text size="10px" c="dimmed" mt={4}>
+                        {safeDate(p.paymentDate)} · Recorded by {p.recordedBy || '—'}
+                      </Text>
+                    </div>
+                    <Group gap={6} wrap="nowrap">
+                      <Text size="xs" className={amountClass(paymentBalances.get(p.id) ?? customer.outstanding)} fw={650}>
+                        {money(paymentBalances.get(p.id) ?? customer.outstanding)}
+                      </Text>
+                      <RowActionsMenu
+                        onEdit={() => {
+                          setEditPayment(p);
+                          setModal('payment');
+                        }}
+                        onDelete={() =>
+                          askDelete({
+                            title: 'Delete payment',
+                            message: `Remove the payment of ${money(p.amount)} recorded by ${p.recordedBy || 'a user'} on ${safeDate(p.paymentDate)}? The outstanding balance will be restored.`,
+                            confirmLabel: 'Delete payment',
+                            run: () => deletePayment(p.id),
+                          })
+                        }
+                      />
+                    </Group>
+                  </Group>
+                </div>
+              ))}
             </div>
             {payments.length === 0 && <EmptyState title="No payments recorded" description="Record a payment when the customer settles part or all of the balance." />}
           </Card>

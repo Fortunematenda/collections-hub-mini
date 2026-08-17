@@ -5,7 +5,7 @@ import { useNavigate } from 'react-router-dom';
 import { PageHero } from '../components/ui';
 import { useApp } from '../context/AppContext';
 import { CompanyFormModal } from '../modals/CoreModals';
-import { initials, money, safeDate } from '../utils';
+import { amountOwed, hasOutstandingBalance, initials, money, safeDate } from '../utils';
 
 export default function Companies() {
   const navigate = useNavigate();
@@ -27,7 +27,9 @@ export default function Companies() {
       <div className="company-grid">
         {activeCompanies.map((c) => {
           const cs = customers.filter((x) => x.companyId === c.id && !x.archived);
-          const outstanding = cs.filter((x) => x.status !== 'Paid').reduce((s, x) => s + x.outstanding, 0);
+          const outstanding = cs
+            .filter((x) => hasOutstandingBalance(x.outstanding))
+            .reduce((s, x) => s + amountOwed(x.outstanding), 0);
           const latest = [...imports.filter((i) => i.companyId === c.id)].sort((a, b) =>
             b.date.localeCompare(a.date),
           )[0];

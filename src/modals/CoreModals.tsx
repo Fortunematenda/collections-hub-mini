@@ -15,6 +15,8 @@ import {
 import type { Communication, Company, CompanyStatus, Customer, Equipment, Payment, PaymentPromise, PreferredContact, AccountStatus } from '../types';
 import { useApp } from '../context/AppContext';
 import {
+  amountOwed,
+  applyPaymentToBalance,
   collectionEmailSubject,
   fillTemplate,
   isPaidOrZeroBalance,
@@ -323,7 +325,13 @@ export function CustomerFormModal({
           Billing
         </Text>
         <SimpleGrid cols={{ base: 1, sm: 2 }}>
-          <TextInput label="Outstanding balance" type="number" value={String(draft.outstanding ?? '')} onChange={(e) => set('outstanding', Number(e.currentTarget.value))} />
+          <TextInput
+            label="Account balance"
+            description="Negative = outstanding (owing). Positive = credit."
+            type="number"
+            value={String(draft.outstanding ?? '')}
+            onChange={(e) => set('outstanding', Number(e.currentTarget.value))}
+          />
           <TextInput label="Original outstanding" type="number" value={String(draft.originalOutstanding ?? '')} onChange={(e) => set('originalOutstanding', Number(e.currentTarget.value))} />
           <TextInput label="Due date" type="date" value={draft.dueDate || ''} onChange={(e) => set('dueDate', e.currentTarget.value)} />
           <TextInput label="Service / package" value={draft.servicePackage || ''} onChange={(e) => set('servicePackage', e.currentTarget.value)} />
@@ -394,32 +402,41 @@ export function MarkPaidModal({
   const [paymentDate, setPaymentDate] = useState(todayIso());
   const [reference, setReference] = useState('');
   const [notes, setNotes] = useState('');
-  const [clearAccount, setClearAccount] = useState(true);
+  const [clearAccount, setClearAccount] = useState(false);
   const [saving, setSaving] = useState(false);
 
   useEffect(() => {
     if (opened && customer) {
-      setAmount(existing?.amount ?? customer.outstanding);
+      setAmount(existing?.amount ?? amountOwed(customer.outstanding));
       setPaymentDate(existing?.paymentDate || todayIso());
       setReference(existing?.reference || '');
       setNotes(existing?.notes || '');
-      setClearAccount(existing ? Boolean(existing.clearedAccount) : true);
+      setClearAccount(existing ? Boolean(existing.clearedAccount) : false);
     }
   }, [opened, customer, existing]);
 
   if (!customer) return null;
 
+  const previewBalance = clearAccount
+    ? 0
+    : existing
+      ? Number(customer.outstanding || 0) - Math.abs(Number(existing.amount) || 0) + Math.abs(Number(amount) || 0)
+      : applyPaymentToBalance(customer.outstanding, amount, false);
+
   return (
     <Modal opened={opened} onClose={onClose} title={existing ? 'Edit payment' : 'Record payment'} {...modalProps}>
       <Stack>
         <Text size="sm" c="dimmed">
-          Current outstanding: <strong>{money(customer.outstanding)}</strong>
+          Current balance: <strong>{money(customer.outstanding)}</strong>
         </Text>
         <TextInput label="Payment amount" type="number" value={String(amount)} onChange={(e) => setAmount(Number(e.currentTarget.value))} />
         <TextInput label="Payment date" type="date" value={paymentDate} onChange={(e) => setPaymentDate(e.currentTarget.value)} />
         <TextInput label="Reference" value={reference} onChange={(e) => setReference(e.currentTarget.value)} />
         <Textarea label="Notes" value={notes} onChange={(e) => setNotes(e.currentTarget.value)} />
-        <Checkbox label="Mark account as fully cleared" checked={clearAccount} onChange={(e) => setClearAccount(e.currentTarget.checked)} />
+        <Checkbox label="Mark account as fully cleared (set balance to R 0)" checked={clearAccount} onChange={(e) => setClearAccount(e.currentTarget.checked)} />
+        <Text size="sm">
+          Balance after this payment: <strong>{money(previewBalance)}</strong>
+        </Text>
         <Group justify="flex-end">
           <Button variant="default" onClick={onClose}>
             Cancel
@@ -472,7 +489,7 @@ export function PromiseToPayModal({
 
   useEffect(() => {
     if (opened && customer) {
-      setAmount(existing?.amount ?? customer.outstanding);
+      setAmount(existing?.amount ?? amountOwed(customer.outstanding));
       setPromiseDate(existing?.promiseDate || todayIso());
       setCustomerComment(existing?.customerComment || '');
       setInternalNote(existing?.internalNote || '');
@@ -568,8 +585,8 @@ export function SendMessageModal({
         name: customer.name,
         account_number: customer.accountNo,
         account_no: customer.accountNo,
-        outstanding_amount: money(customer.outstanding),
-        amount: money(customer.outstanding),
+        outstanding_amount: money(amountOwed(customer.outstanding)),
+        amount: money(amountOwed(customer.outstanding)),
         due_date: customer.dueDate,
         company_name: company?.name,
         company: company?.name,
@@ -610,8 +627,8 @@ export function SendMessageModal({
         )}
         {paidOrZero && (
           <Alert color="yellow" title="No balance due">
-            Account {customer.accountNo} is paid (R 0). Collection emails are blocked — sending “outstanding
-            balance R 0” is a common spam trigger and can cause Gmail replies to bounce with 550.
+            Account {customer.accountNo} has no amount owing (paid or in credit). Collection emails are blocked —
+            sending a zero/credit “outstanding” notice is a common spam trigger and can cause replies to bounce.
           </Alert>
         )}
         {channel === 'Email' && (
@@ -719,7 +736,7 @@ export function BulkEmailModal({
     ? fillTemplate(selected?.body || '', {
         name: previewCustomer.name,
         account_no: previewCustomer.accountNo,
-        amount: money(previewCustomer.outstanding),
+        amount: money(amountOwed(previewCustomer.outstanding)),
         due_date: previewCustomer.dueDate,
         company: company.name,
       })

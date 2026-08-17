@@ -9,6 +9,7 @@ import { useApp } from '../context/AppContext';
 import { useTablePaging } from '../hooks/useTablePaging';
 import { MarkPaidModal, PromiseToPayModal, SendMessageModal } from '../modals/CoreModals';
 import type { Customer } from '../types';
+import { hasOutstandingBalance } from '../utils';
 
 export default function Followups() {
   const navigate = useNavigate();
@@ -18,7 +19,7 @@ export default function Followups() {
   const [paidCustomer, setPaidCustomer] = useState<Customer | null>(null);
 
   const list = companyCustomers.filter(
-    (c) => ['Payment Due', 'Follow-up', 'Unresponsive'].includes(c.status) && c.outstanding > 0,
+    (c) => ['Payment Due', 'Follow-up', 'Unresponsive'].includes(c.status) && hasOutstandingBalance(c.outstanding),
   );
   const paging = useTablePaging(list, company.id || 'followups');
 

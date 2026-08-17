@@ -83,6 +83,14 @@ export default function Imports() {
   const [pendingDelete, setPendingDelete] = useState<ImportBatch | null>(null);
 
   const headers = importRows.length ? Object.keys(importRows[0]) : [];
+  const previewRow = importRows[0];
+
+  function mappedPreview(key: string) {
+    const col = mapping[key];
+    if (!col || !previewRow) return '—';
+    const text = String(previewRow[col] ?? '').trim();
+    return text || '—';
+  }
 
   const importActions = (batch: ImportBatch) =>
     isAdmin ? (
@@ -108,7 +116,7 @@ export default function Imports() {
           </>
         }
         title="Excel imports"
-        description="Upload this company's outstanding-client spreadsheet. Existing accounts (matched by account number) only get their balance updated — no duplicates."
+        description="Upload this company's outstanding-client spreadsheet. Map Account Summary columns such as service/package and monthly subscription so they copy onto the customer record. Matching account numbers update the existing customer."
       />
 
       <div className="two-col">
@@ -162,6 +170,32 @@ export default function Imports() {
                   </div>
                 </div>
               ))}
+              <div className="mapping-section">
+                <div className="mapping-section-title">First-row preview</div>
+                <Text size="xs" c="dimmed" mb="sm">
+                  This is what Account Summary will receive from the first data row. If Service / package is —, pick the spreadsheet column that holds the package name.
+                </Text>
+                <div className="mapping-grid">
+                  {[
+                    ['accountNo', 'Account number'],
+                    ['name', 'Client name'],
+                    ['customerReference', 'Customer reference'],
+                    ['servicePackage', 'Service / package'],
+                    ['monthlySubscription', 'Monthly subscription'],
+                    ['originalOutstanding', 'Original outstanding'],
+                    ['outstanding', 'Current outstanding'],
+                    ['dueDate', 'Due date'],
+                    ['collectionStage', 'Collection status'],
+                  ].map(([key, label]) => (
+                    <div className="mapping-item" key={key}>
+                      <div className="mapping-key">{label}</div>
+                      <Text size="xs" fw={650} mt={4}>
+                        {mappedPreview(key)}
+                      </Text>
+                    </div>
+                  ))}
+                </div>
+              </div>
               <div className="import-commit">
                 <Text size="xs" c="dimmed">
                   {importRows.length} data rows found in this file. Required: Account number,

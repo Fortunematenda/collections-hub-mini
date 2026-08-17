@@ -2,6 +2,7 @@ import { ImapFlow } from 'imapflow';
 import { simpleParser } from 'mailparser';
 import { readAppStore, writeAppStore } from './db.js';
 import { runCollectionsJobs } from './lib/collections-jobs.js';
+import { hasOutstandingBalance } from '../shared/balance.js';
 
 function envPass() {
   return String(process.env.SMTP_PASS || process.env.IMAP_PASS || '').replace(/^['"]|['"]$/g, '');
@@ -114,7 +115,7 @@ function findCustomer(store, { from, subject, inReplyTo, references, body }) {
     const recent = matches.find((m) => m.id === emailed.customerId);
     if (recent) return recent;
   }
-  const withBalance = matches.find((c) => Number(c.outstanding) > 0);
+  const withBalance = matches.find((c) => hasOutstandingBalance(c.outstanding));
   return withBalance || matches[0];
 }
 

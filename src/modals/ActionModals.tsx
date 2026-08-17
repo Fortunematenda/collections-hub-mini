@@ -25,7 +25,7 @@ import type {
 } from '../types';
 import { useApp } from '../context/AppContext';
 import { UserSelect } from '../components/UserSelect';
-import { todayIso, actorName } from '../utils';
+import { todayIso, actorName, money } from '../utils';
 
 const modalProps = { radius: 'lg' as const, centered: true, className: 'app-modal', size: 'lg' as const };
 
@@ -278,7 +278,7 @@ export function CancelServiceModal({
     <Modal opened={opened} onClose={onClose} title="Cancel service" {...modalProps}>
       <Stack>
         <Text size="sm" c="dimmed">
-          Outstanding balance remains {customer.outstanding}. This action archives the service status — history is preserved.
+          Outstanding balance remains {money(customer.outstanding)}. This action archives the service status — history is preserved.
         </Text>
         <TextInput label="Cancellation date" type="date" value={cancellationDate} onChange={(e) => setCancellationDate(e.currentTarget.value)} />
         <TextInput label="Cancellation reason" required value={reason} onChange={(e) => setReason(e.currentTarget.value)} />

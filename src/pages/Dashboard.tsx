@@ -13,15 +13,17 @@ import { useNavigate } from 'react-router-dom';
 import { CustomerTable } from '../components/CustomerTable';
 import { ActivityRow, Metric, PageHero } from '../components/ui';
 import { useApp } from '../context/AppContext';
-import { money } from '../utils';
+import { hasOutstandingBalance, money } from '../utils';
 
 export default function Dashboard() {
   const navigate = useNavigate();
-  const { company, companyCustomers, totalOutstanding, promiseCustomers, recoveryNeeded } = useApp();
+  const { company, companyCustomers, totalOutstanding, outstandingCustomers, promiseCustomers, recoveryNeeded } = useApp();
 
-  const active = companyCustomers.filter((c) => c.outstanding > 0 && c.status !== 'Paid');
-  const followups = companyCustomers.filter((c) =>
-    ['Payment Due', 'Follow-up', 'Unresponsive'].includes(c.status),
+  const active = outstandingCustomers;
+  const followups = companyCustomers.filter(
+    (c) =>
+      hasOutstandingBalance(c.outstanding) &&
+      ['Payment Due', 'Follow-up', 'Unresponsive'].includes(c.status),
   ).length;
   const stages: [string, number][] = [
     ['Payment Due', companyCustomers.filter((c) => c.status === 'Payment Due').length],
@@ -75,7 +77,7 @@ export default function Dashboard() {
             </Button>
           </div>
           <CustomerTable
-            customers={[...active].sort((a, b) => b.outstanding - a.outstanding).slice(0, 5)}
+            customers={[...active].sort((a, b) => a.outstanding - b.outstanding).slice(0, 5)}
             onOpen={(c) => navigate('/customers/' + c.id)}
           />
         </Card>

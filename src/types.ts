@@ -261,6 +261,7 @@ export type Payment = {
   notes?: string;
   recordedBy: string;
   clearedAccount?: boolean;
+  balanceAfter?: number;
   createdAt: string;
 };
 

@@ -1,5 +1,4 @@
 import React, { createContext, useCallback, useContext, useEffect, useMemo, useRef, useState } from 'react';
-import * as XLSX from 'xlsx';
 import { notifyError, notifySuccess, notifyWarning } from '../lib/notify';
 import { parseImportWorkbook } from '../lib/parseImportWorkbook';
 import {
@@ -43,10 +42,13 @@ import type {
 } from '../types';
 import {
   actorName,
+  amountOwed,
+  applyPaymentToBalance,
   compareAccountNo,
   collectionEmailSubject,
   fillTemplate,
   findColumn,
+  hasOutstandingBalance,
   isPaidOrZeroBalance,
   money,
   normalize,
@@ -62,6 +64,7 @@ import { getStoredToken } from '../api/auth';
 import { fetchAppData, saveAppData } from '../api/data';
 import { useAuth } from './AuthContext';
 import { normalizeAccountKey } from '../../shared/account-key.js';
+import { parseImportDate } from '../../shared/import-date.js';
 import { sendMailViaApi, syncInboxViaApi } from '../api/mailer';
 import { defaultEmailTemplates, isLegacyCollectionBody } from '../data/emailTemplates';
 import { sendWhatsAppViaApi } from '../api/whatsapp';
@@ -634,8 +637,8 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
   const companyRecoveries = useMemo(() => recoveries.filter((r) => r.companyId === companyId), [recoveries, companyId]);
   const companyImports = useMemo(() => imports.filter((i) => i.companyId === companyId), [imports, companyId]);
   const companyTemplates = useMemo(() => templates.filter((t) => t.companyId === companyId), [templates, companyId]);
-  const outstandingCustomers = companyCustomers.filter((c) => c.outstanding > 0 && c.status !== 'Paid');
-  const totalOutstanding = outstandingCustomers.reduce((s, c) => s + c.outstanding, 0);
+  const outstandingCustomers = companyCustomers.filter((c) => hasOutstandingBalance(c.outstanding));
+  const totalOutstanding = outstandingCustomers.reduce((s, c) => s + amountOwed(c.outstanding), 0);
   const promiseCustomers = companyCustomers.filter((c) => c.status === 'Promise to Pay');
   const recoveryNeeded = companyCustomers.filter((c) => c.status === 'Recovery Required').length;
 
@@ -747,8 +750,8 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
       outstanding: input.outstanding || 0,
       originalOutstanding: input.originalOutstanding ?? input.outstanding ?? 0,
       dueDate: input.dueDate || todayIso(),
-      status: input.status || (input.outstanding ? 'Payment Due' : 'Paid'),
-      collectionStage: input.collectionStage || (input.outstanding ? 'New Overdue' : 'Closed'),
+      status: input.status || (hasOutstandingBalance(input.outstanding) ? 'Payment Due' : 'Paid'),
+      collectionStage: input.collectionStage || (hasOutstandingBalance(input.outstanding) ? 'New Overdue' : 'Closed'),
       lastContact: 'Not contacted',
       equipment: input.equipment,
       address: input.address,
@@ -930,29 +933,32 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
   }) {
     const customer = customers.find((c) => c.id === input.customerId);
     if (!customer) return;
+    const recorder = actorName();
+    const paymentAmount = Math.abs(Number(input.amount) || 0);
+    const nextOutstanding = applyPaymentToBalance(customer.outstanding, paymentAmount, input.clearAccount);
     const payment: Payment = {
       id: uid('pay'),
       companyId: customer.companyId,
       customerId: customer.id,
-      amount: input.amount,
+      amount: paymentAmount,
       paymentDate: input.paymentDate,
       reference: input.reference,
       method: 'Manual',
       notes: input.notes,
-      recordedBy: actorName(),
+      recordedBy: recorder,
       clearedAccount: input.clearAccount,
+      balanceAfter: nextOutstanding,
       createdAt: nowIso(),
     };
     setPayments((prev) => [payment, ...prev]);
-    const nextOutstanding = input.clearAccount ? 0 : Math.max(0, customer.outstanding - input.amount);
     setCustomers((prev) =>
       prev.map((c) =>
         c.id === customer.id
           ? {
               ...c,
               outstanding: nextOutstanding,
-              status: nextOutstanding === 0 || input.clearAccount ? 'Paid' : c.status,
-              collectionStage: nextOutstanding === 0 || input.clearAccount ? 'Paid' : 'Payment Pending',
+              status: !hasOutstandingBalance(nextOutstanding) || input.clearAccount ? 'Paid' : c.status,
+              collectionStage: !hasOutstandingBalance(nextOutstanding) || input.clearAccount ? 'Paid' : 'Payment Pending',
               lastContact: `Payment · ${safeDate(input.paymentDate)}`,
             }
           : c,
@@ -969,7 +975,7 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
       companyId: customer.companyId,
       customerId: customer.id,
       action: 'Payment recorded',
-      description: `Payment of ${money(input.amount)} recorded${input.clearAccount ? '. Account marked as fully cleared.' : '.'}`,
+      description: `${recorder} recorded a payment of ${money(paymentAmount)}. Balance is now ${money(nextOutstanding)}.`,
     });
     setCommunications((prev) => [
       {
@@ -978,31 +984,45 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
         customerId: customer.id,
         channel: 'Internal note',
         direction: 'Internal',
-        message: `Payment of ${money(input.amount)} recorded${input.reference ? ` (ref ${input.reference})` : ''}.`,
+        message: `${recorder} recorded a payment of ${money(paymentAmount)}${input.reference ? ` (ref ${input.reference})` : ''}. Balance is now ${money(nextOutstanding)}.`,
         status: 'Logged',
         createdAt: nowIso(),
-        createdBy: actorName(),
+        createdBy: recorder,
       },
       ...prev,
     ]);
-    toastSuccess('Payment recorded successfully.');
+    toastSuccess(`Payment recorded. Balance is now ${money(nextOutstanding)}.`);
   }
 
   function updatePayment(payment: Payment) {
     const previous = payments.find((p) => p.id === payment.id);
     if (!previous) return;
-    const delta = payment.amount - previous.amount;
-    setPayments((prev) => prev.map((p) => (p.id === payment.id ? payment : p)));
-    if (delta !== 0) {
+    const customer = customers.find((c) => c.id === payment.customerId);
+    const delta = Math.abs(Number(payment.amount) || 0) - Math.abs(Number(previous.amount) || 0);
+    const nextOutstanding = payment.clearedAccount
+      ? 0
+      : Number(customer?.outstanding || 0) + delta;
+    const updated = {
+      ...payment,
+      amount: Math.abs(Number(payment.amount) || 0),
+      recordedBy: payment.recordedBy || previous.recordedBy || actorName(),
+      balanceAfter: nextOutstanding,
+    };
+    setPayments((prev) => prev.map((p) => (p.id === payment.id ? updated : p)));
+    if (customer && (delta !== 0 || payment.clearedAccount)) {
       setCustomers((prev) =>
         prev.map((c) =>
           c.id === payment.customerId
-            ? { ...c, outstanding: Math.max(0, Number(c.outstanding || 0) - delta) }
+            ? {
+                ...c,
+                outstanding: nextOutstanding,
+                status: !hasOutstandingBalance(nextOutstanding) || payment.clearedAccount ? 'Paid' : c.status,
+              }
             : c,
         ),
       );
     }
-    toastSuccess('Payment updated.');
+    toastSuccess(`Payment updated. Balance is now ${money(nextOutstanding)}.`);
   }
 
   function deletePayment(id: string) {
@@ -1010,16 +1030,17 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
     if (!payment) return;
     setPayments((prev) => prev.filter((p) => p.id !== id));
     setCustomers((prev) =>
-      prev.map((c) =>
-        c.id === payment.customerId
-          ? {
-              ...c,
-              outstanding: Number(c.outstanding || 0) + Number(payment.amount || 0),
-              status: c.status === 'Paid' ? 'Follow-up' : c.status,
-              collectionStage: c.collectionStage === 'Paid' ? 'Follow-up Due' : c.collectionStage,
-            }
-          : c,
-      ),
+      prev.map((c) => {
+        if (c.id !== payment.customerId) return c;
+        const nextOutstanding = Number(c.outstanding || 0) - Number(payment.amount || 0);
+        const owing = hasOutstandingBalance(nextOutstanding);
+        return {
+          ...c,
+          outstanding: nextOutstanding,
+          status: owing && c.status === 'Paid' ? 'Follow-up' : c.status,
+          collectionStage: owing && c.collectionStage === 'Paid' ? 'Follow-up Due' : c.collectionStage,
+        };
+      }),
     );
     toastSuccess('Payment deleted.');
   }
@@ -1170,7 +1191,7 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
 
       createPromise({
         customerId: customer.id,
-        amount: customer.outstanding,
+        amount: amountOwed(customer.outstanding),
         promiseDate: parsed.date,
         customerComment: body.slice(0, 500),
         internalNote: parsed.dateInferred
@@ -1234,7 +1255,7 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
         customerName: customer.name,
         accountNo: customer.accountNo,
         dueDate: customer.dueDate,
-        amount: money(customer.outstanding),
+        amount: money(amountOwed(customer.outstanding)),
       });
 
       if (!result.ok) {
@@ -1306,7 +1327,7 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
 
     if (!input.isReply && isPaidOrZeroBalance(customer)) {
       const error =
-        'This account is paid (R 0). Collection emails are blocked so they are not flagged as spam.';
+        'This account has no amount owing (paid or in credit). Collection emails are blocked so they are not flagged as spam.';
       toastError(error);
       return { ok: false, error };
     }
@@ -1408,8 +1429,8 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
         name: customer.name,
         account_number: customer.accountNo,
         account_no: customer.accountNo,
-        outstanding_amount: money(customer.outstanding),
-        amount: money(customer.outstanding),
+        outstanding_amount: money(amountOwed(customer.outstanding)),
+        amount: money(amountOwed(customer.outstanding)),
         due_date: safeDate(customer.dueDate),
         company_name: companyRow?.name,
         company: companyRow?.name,
@@ -1895,16 +1916,14 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
 
   function value(row: Record<string, unknown>, key: string) {
     const col = mapping[key];
-    return col ? row[col] : '';
+    if (!col) return '';
+    if (Object.prototype.hasOwnProperty.call(row, col)) return row[col];
+    const want = normalize(col);
+    const found = Object.keys(row).find((header) => normalize(header) === want);
+    return found ? row[found] : '';
   }
   function dateValue(raw: unknown) {
-    if (raw instanceof Date && !isNaN(raw.getTime())) return raw.toISOString().slice(0, 10);
-    if (typeof raw === 'number') {
-      const d = XLSX.SSF.parse_date_code(raw);
-      if (d) return `${d.y}-${String(d.m).padStart(2, '0')}-${String(d.d).padStart(2, '0')}`;
-    }
-    const d = new Date(String(raw));
-    return isNaN(d.getTime()) ? todayIso() : d.toISOString().slice(0, 10);
+    return parseImportDate(raw);
   }
   function numberValue(raw: unknown) {
     return parseSignedAmount(raw);
@@ -1918,6 +1937,7 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
     if (!mapping[key]) return undefined;
     const raw = value(row, key);
     if (raw === '' || raw == null) return undefined;
+    if (!/[0-9]/.test(String(raw))) return undefined;
     return numberValue(raw);
   }
   function mappedDate(row: Record<string, unknown>, key: string) {
@@ -1960,7 +1980,16 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
       'Recovery Required',
       'Closed',
     ];
-    return stages.find((stage) => normalize(stage) === normalize(raw));
+    const exact = stages.find((stage) => normalize(stage) === normalize(raw));
+    if (exact) return exact;
+    const n = normalize(raw);
+    if (n.includes('overdue') || n === 'outstanding' || n === 'unpaid' || n === 'arrears') return 'New Overdue';
+    if (n.includes('follow')) return 'Follow-up Due';
+    if (n.includes('promise')) return 'Promise to Pay';
+    if (n.includes('recover')) return 'Recovery Required';
+    if (n.includes('cancel')) return 'Service Cancelled';
+    if (n === 'paid' || n === 'cleared' || n === 'credit') return 'Paid';
+    return undefined;
   }
   function parseAccountStatus(raw?: string): AccountStatus | undefined {
     if (!raw) return undefined;
@@ -2101,12 +2130,22 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
         next[ix] = {
           ...prev,
           ...extras,
+          name,
           outstanding: amount,
+          originalOutstanding: extras.originalOutstanding ?? prev.originalOutstanding ?? amount,
+          dueDate: extras.dueDate || prev.dueDate,
           archived: false,
+          customerReference: extras.customerReference || prev.customerReference,
+          servicePackage: extras.servicePackage || prev.servicePackage,
+          monthlySubscription: extras.monthlySubscription ?? prev.monthlySubscription,
           status:
             extras.status ||
-            (amount === 0 ? 'Paid' : prev.status === 'Paid' && amount !== 0 ? 'Payment Due' : prev.status),
-          collectionStage: extras.collectionStage || (amount === 0 ? 'Paid' : prev.collectionStage),
+            (!hasOutstandingBalance(amount)
+              ? 'Paid'
+              : prev.status === 'Paid'
+                ? 'Payment Due'
+                : prev.status),
+          collectionStage: extras.collectionStage || (!hasOutstandingBalance(amount) ? 'Paid' : prev.collectionStage),
         };
         updated++;
         if (prevAmount !== amount) {
@@ -2133,15 +2172,15 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
           outstanding: amount,
           originalOutstanding: extras.originalOutstanding ?? amount,
           dueDate: extras.dueDate || todayIso(),
-          status: extras.status || (amount === 0 ? 'Paid' : 'Payment Due'),
-          collectionStage: extras.collectionStage || (amount === 0 ? 'Closed' : 'New Overdue'),
+          status: extras.status || (hasOutstandingBalance(amount) ? 'Payment Due' : 'Paid'),
+          collectionStage: extras.collectionStage || (hasOutstandingBalance(amount) ? 'New Overdue' : 'Closed'),
           lastContact: 'Not contacted',
           address: extras.address || '',
           suburb: extras.suburb,
           city: extras.city,
           province: extras.province,
           postalCode: extras.postalCode,
-          customerReference: extras.customerReference,
+          customerReference: extras.customerReference || account,
           servicePackage: extras.servicePackage,
           monthlySubscription: extras.monthlySubscription,
           preferredContact: extras.preferredContact,
@@ -2167,7 +2206,7 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
       (c) =>
         c.companyId === companyId &&
         !c.archived &&
-        c.outstanding > 0 &&
+        hasOutstandingBalance(c.outstanding) &&
         !seen.has(normalizeAccountKey(c.accountNo)),
     ).length;
     setCustomers(next);

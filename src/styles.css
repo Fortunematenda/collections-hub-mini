@@ -781,8 +781,16 @@ select {
   color: #dc2626;
 }
 
+.amount-credit {
+  color: #0f9d58;
+}
+
 .customer-detail-balance.amount-negative {
   color: #dc2626;
+}
+
+.customer-detail-balance.amount-credit {
+  color: #0f9d58;
 }
 
 .pipeline {
