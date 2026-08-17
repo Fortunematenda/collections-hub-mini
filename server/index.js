@@ -152,6 +152,11 @@ const revokedTokens = new Set();
 /** @type {{ tokenHash: string; userId: string; expiresAt: number }[]} */
 let resetTokens = [];
 
+function mailIpFamily() {
+  const n = Number(process.env.SMTP_FAMILY || process.env.MAIL_FAMILY || '');
+  return n === 4 || n === 6 ? n : undefined;
+}
+
 function smtpSettings() {
   return {
     host: process.env.SMTP_HOST || '',
@@ -162,6 +167,7 @@ function smtpSettings() {
     from: process.env.SMTP_FROM || process.env.SMTP_USER || '',
     fromName: process.env.SMTP_FROM_NAME || 'BretuneTech',
     replyTo: String(process.env.SMTP_REPLY_TO || '').trim(),
+    family: mailIpFamily(),
   };
 }
 
@@ -176,6 +182,7 @@ function createTransport() {
     host: smtp.host,
     port: smtp.port,
     secure: smtp.secure,
+    ...(smtp.family ? { family: smtp.family } : {}),
     auth: { user: smtp.user, pass: smtp.pass },
   });
 }

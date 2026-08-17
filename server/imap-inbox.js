@@ -7,6 +7,11 @@ function envPass() {
   return String(process.env.SMTP_PASS || process.env.IMAP_PASS || '').replace(/^['"]|['"]$/g, '');
 }
 
+function mailIpFamily() {
+  const n = Number(process.env.SMTP_FAMILY || process.env.MAIL_FAMILY || '');
+  return n === 4 || n === 6 ? n : undefined;
+}
+
 export function imapSettings() {
   return {
     host: process.env.IMAP_HOST || '',
@@ -198,12 +203,14 @@ async function foldersToScan(client) {
 
 async function importFromAccount(settings, store, existingExt) {
   const mailbox = normalizeEmail(settings.user);
+  const family = mailIpFamily();
   const client = new ImapFlow({
     host: settings.host,
     port: settings.port,
     secure: true,
     auth: { user: settings.user, pass: settings.pass },
     logger: false,
+    ...(family ? { tls: { family } } : {}),
   });
   const added = [];
   const activities = [];
