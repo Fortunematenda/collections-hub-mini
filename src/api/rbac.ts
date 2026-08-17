@@ -99,6 +99,13 @@ export async function deleteRole(id: string) {
   if (!res.ok || !data.ok) throw new Error(data.error || 'Unable to delete role.');
 }
 
+export async function fetchUserDirectory() {
+  const res = await fetch(apiUrl('/api/users/directory'), { headers: authHeaders() });
+  const data = await parse<{ users?: { id: string; name: string; email: string }[] }>(res);
+  if (!res.ok || !data.ok) throw new Error(data.error || 'Unable to load users.');
+  return data.users || [];
+}
+
 export async function fetchUsers() {
   const res = await fetch(apiUrl('/api/users'), { headers: authHeaders() });
   const data = await parse<{ users?: ManagedUser[] }>(res);

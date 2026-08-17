@@ -12,7 +12,7 @@ import {
   TextInput,
   Textarea,
 } from '@mantine/core';
-import type { Communication, Company, CompanyStatus, Customer, Equipment, PreferredContact, AccountStatus } from '../types';
+import type { Communication, Company, CompanyStatus, Customer, Equipment, Payment, PaymentPromise, PreferredContact, AccountStatus } from '../types';
 import { useApp } from '../context/AppContext';
 import {
   collectionEmailSubject,
@@ -382,12 +382,14 @@ export function MarkPaidModal({
   opened,
   onClose,
   customer,
+  existing,
 }: {
   opened: boolean;
   onClose: () => void;
   customer: Customer | null;
+  existing?: Payment | null;
 }) {
-  const { recordPayment } = useApp();
+  const { recordPayment, updatePayment } = useApp();
   const [amount, setAmount] = useState(0);
   const [paymentDate, setPaymentDate] = useState(todayIso());
   const [reference, setReference] = useState('');
@@ -397,18 +399,18 @@ export function MarkPaidModal({
 
   useEffect(() => {
     if (opened && customer) {
-      setAmount(customer.outstanding);
-      setPaymentDate(todayIso());
-      setReference('');
-      setNotes('');
-      setClearAccount(true);
+      setAmount(existing?.amount ?? customer.outstanding);
+      setPaymentDate(existing?.paymentDate || todayIso());
+      setReference(existing?.reference || '');
+      setNotes(existing?.notes || '');
+      setClearAccount(existing ? Boolean(existing.clearedAccount) : true);
     }
-  }, [opened, customer]);
+  }, [opened, customer, existing]);
 
   if (!customer) return null;
 
   return (
-    <Modal opened={opened} onClose={onClose} title="Record payment" {...modalProps}>
+    <Modal opened={opened} onClose={onClose} title={existing ? 'Edit payment' : 'Record payment'} {...modalProps}>
       <Stack>
         <Text size="sm" c="dimmed">
           Current outstanding: <strong>{money(customer.outstanding)}</strong>
@@ -426,12 +428,23 @@ export function MarkPaidModal({
             loading={saving}
             onClick={() => {
               setSaving(true);
-              recordPayment({ customerId: customer.id, amount, paymentDate, reference, notes, clearAccount });
+              if (existing) {
+                updatePayment({
+                  ...existing,
+                  amount,
+                  paymentDate,
+                  reference,
+                  notes,
+                  clearedAccount: clearAccount,
+                });
+              } else {
+                recordPayment({ customerId: customer.id, amount, paymentDate, reference, notes, clearAccount });
+              }
               setSaving(false);
               onClose();
             }}
           >
-            Record Payment
+            {existing ? 'Save changes' : 'Record Payment'}
           </Button>
         </Group>
       </Stack>
@@ -443,12 +456,14 @@ export function PromiseToPayModal({
   opened,
   onClose,
   customer,
+  existing,
 }: {
   opened: boolean;
   onClose: () => void;
   customer: Customer | null;
+  existing?: PaymentPromise | null;
 }) {
-  const { createPromise } = useApp();
+  const { createPromise, updatePromise } = useApp();
   const [amount, setAmount] = useState(0);
   const [promiseDate, setPromiseDate] = useState(todayIso());
   const [customerComment, setCustomerComment] = useState('');
@@ -457,17 +472,17 @@ export function PromiseToPayModal({
 
   useEffect(() => {
     if (opened && customer) {
-      setAmount(customer.outstanding);
-      setPromiseDate(todayIso());
-      setCustomerComment('');
-      setInternalNote('');
+      setAmount(existing?.amount ?? customer.outstanding);
+      setPromiseDate(existing?.promiseDate || todayIso());
+      setCustomerComment(existing?.customerComment || '');
+      setInternalNote(existing?.internalNote || '');
     }
-  }, [opened, customer]);
+  }, [opened, customer, existing]);
 
   if (!customer) return null;
 
   return (
-    <Modal opened={opened} onClose={onClose} title="Promise to pay" {...modalProps}>
+    <Modal opened={opened} onClose={onClose} title={existing ? 'Edit promise' : 'Promise to pay'} {...modalProps}>
       <Stack>
         <TextInput label="Promise amount" type="number" value={String(amount)} onChange={(e) => setAmount(Number(e.currentTarget.value))} />
         <TextInput label="Promise date" type="date" value={promiseDate} onChange={(e) => setPromiseDate(e.currentTarget.value)} />
@@ -481,12 +496,16 @@ export function PromiseToPayModal({
             loading={saving}
             onClick={() => {
               setSaving(true);
-              createPromise({ customerId: customer.id, amount, promiseDate, customerComment, internalNote });
+              if (existing) {
+                updatePromise(existing.id, { amount, promiseDate, customerComment, internalNote });
+              } else {
+                createPromise({ customerId: customer.id, amount, promiseDate, customerComment, internalNote });
+              }
               setSaving(false);
               onClose();
             }}
           >
-            Save Promise
+            {existing ? 'Save changes' : 'Save Promise'}
           </Button>
         </Group>
       </Stack>

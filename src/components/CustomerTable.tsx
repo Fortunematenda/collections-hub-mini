@@ -1,5 +1,5 @@
 import { ActionIcon, Badge, Button, Checkbox, Group, Menu, Modal, Stack, Text } from '@mantine/core';
-import { MoreHorizontal } from 'lucide-react';
+import { MoreHorizontal, MoreVertical, Pencil, Trash2 } from 'lucide-react';
 import type { Customer } from '../types';
 import { amountClass, money, safeDate, statusColor } from '../utils';
 import { CustomerIdentity, EmptyState } from './ui';
@@ -195,7 +195,7 @@ export function ConfirmModal({
 
 export function MoreActionsMenu({ items }: { items: { label: string; onClick: () => void; color?: string; icon?: React.ReactNode }[] }) {
   return (
-    <Menu shadow="md" width={220}>
+    <Menu shadow="md" width={220} withinPortal>
       <Menu.Target>
         <ActionIcon variant="default" size="lg" radius="md" aria-label="More actions">
           <MoreHorizontal size={16} />
@@ -207,6 +207,42 @@ export function MoreActionsMenu({ items }: { items: { label: string; onClick: ()
             {item.label}
           </Menu.Item>
         ))}
+      </Menu.Dropdown>
+    </Menu>
+  );
+}
+
+export function RowActionsMenu({
+  onEdit,
+  onDelete,
+}: {
+  onEdit?: () => void;
+  onDelete?: () => void;
+}) {
+  return (
+    <Menu shadow="md" width={160} position="bottom-end" withinPortal>
+      <Menu.Target>
+        <ActionIcon
+          variant="subtle"
+          color="gray"
+          size="sm"
+          aria-label="Row actions"
+          onClick={(event) => event.stopPropagation()}
+        >
+          <MoreVertical size={16} />
+        </ActionIcon>
+      </Menu.Target>
+      <Menu.Dropdown>
+        {onEdit && (
+          <Menu.Item leftSection={<Pencil size={14} />} onClick={onEdit}>
+            Edit
+          </Menu.Item>
+        )}
+        {onDelete && (
+          <Menu.Item color="red" leftSection={<Trash2 size={14} />} onClick={onDelete}>
+            Delete
+          </Menu.Item>
+        )}
       </Menu.Dropdown>
     </Menu>
   );

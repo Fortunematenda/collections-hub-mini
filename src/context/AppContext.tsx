@@ -166,6 +166,8 @@ type AppContextValue = {
   updateStatus: (customer: Customer, status: AccountStatus) => void;
   // operational
   recordPayment: (input: { customerId: string; amount: number; paymentDate: string; reference?: string; notes?: string; clearAccount: boolean }) => void;
+  updatePayment: (payment: Payment) => void;
+  deletePayment: (id: string) => void;
   createPromise: (input: {
     customerId: string;
     amount: number;
@@ -174,7 +176,9 @@ type AppContextValue = {
     internalNote?: string;
     silent?: boolean;
   }) => void;
+  updatePromise: (id: string, input: { amount: number; promiseDate: string; customerComment?: string; internalNote?: string }) => void;
   updatePromiseStatus: (id: string, status: PromiseStatus, outcome?: string) => void;
+  deletePromise: (id: string) => void;
   sendMessage: (input: {
     customerId: string;
     channel: 'WhatsApp' | 'Email';
@@ -193,12 +197,16 @@ type AppContextValue = {
   markCommunicationRead: (id: string) => void;
   logCall: (input: { customerId: string; direction: CommDirection; callResult: CallResult; notes: string; followUpRequired?: boolean; followUpDate?: string }) => void;
   addNote: (input: { customerId: string; note: string; type: NoteType; pinned?: boolean }) => void;
+  updateNote: (note: Note) => void;
   deleteNote: (id: string) => void;
   scheduleFollowUp: (input: { customerId: string; followUpDate: string; followUpTime?: string; channel: CommChannel | 'Any'; assignedUser: string; notes?: string }) => void;
+  updateFollowUp: (item: FollowUp) => void;
+  deleteFollowUp: (id: string) => void;
   cancelService: (input: { customerId: string; cancellationDate: string; reason: string; customerRequested: boolean; recoveryRequired: boolean; notes?: string }) => void;
   // equipment / recovery
   addEquipment: (item: Omit<Equipment, 'id'> & { id?: string }) => void;
   updateEquipment: (item: Equipment) => void;
+  deleteEquipment: (id: string) => void;
   createRecoveryJob: (input: {
     customerId: string;
     equipmentIds: string[];
@@ -210,6 +218,7 @@ type AppContextValue = {
     internalNotes?: string;
   }) => void;
   updateRecovery: (job: RecoveryJob) => void;
+  deleteRecovery: (id: string) => void;
   completeRecovery: (input: {
     jobId: string;
     outcome: string;
@@ -979,6 +988,42 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
     toastSuccess('Payment recorded successfully.');
   }
 
+  function updatePayment(payment: Payment) {
+    const previous = payments.find((p) => p.id === payment.id);
+    if (!previous) return;
+    const delta = payment.amount - previous.amount;
+    setPayments((prev) => prev.map((p) => (p.id === payment.id ? payment : p)));
+    if (delta !== 0) {
+      setCustomers((prev) =>
+        prev.map((c) =>
+          c.id === payment.customerId
+            ? { ...c, outstanding: Math.max(0, Number(c.outstanding || 0) - delta) }
+            : c,
+        ),
+      );
+    }
+    toastSuccess('Payment updated.');
+  }
+
+  function deletePayment(id: string) {
+    const payment = payments.find((p) => p.id === id);
+    if (!payment) return;
+    setPayments((prev) => prev.filter((p) => p.id !== id));
+    setCustomers((prev) =>
+      prev.map((c) =>
+        c.id === payment.customerId
+          ? {
+              ...c,
+              outstanding: Number(c.outstanding || 0) + Number(payment.amount || 0),
+              status: c.status === 'Paid' ? 'Follow-up' : c.status,
+              collectionStage: c.collectionStage === 'Paid' ? 'Follow-up Due' : c.collectionStage,
+            }
+          : c,
+      ),
+    );
+    toastSuccess('Payment deleted.');
+  }
+
   function createPromise(input: {
     customerId: string;
     amount: number;
@@ -1057,6 +1102,39 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
         : `Promise to pay ${money(input.amount)} recorded for ${safeDate(input.promiseDate)}.`,
     });
     if (!input.silent) toastSuccess(existing ? 'Promise to pay updated.' : 'Promise to pay recorded.');
+  }
+
+  function updatePromise(id: string, input: { amount: number; promiseDate: string; customerComment?: string; internalNote?: string }) {
+    const current = promises.find((p) => p.id === id);
+    if (!current) return;
+    setPromises((prev) =>
+      prev.map((p) =>
+        p.id === id
+          ? {
+              ...p,
+              amount: input.amount,
+              promiseDate: input.promiseDate,
+              customerComment: input.customerComment,
+              internalNote: input.internalNote,
+            }
+          : p,
+      ),
+    );
+    setCustomers((prev) =>
+      prev.map((c) =>
+        c.id === current.customerId && current.status === 'Pending'
+          ? { ...c, promisedDate: input.promiseDate, promisedAmount: input.amount, nextFollowUp: input.promiseDate }
+          : c,
+      ),
+    );
+    toastSuccess('Promise updated.');
+  }
+
+  function deletePromise(id: string) {
+    const current = promises.find((p) => p.id === id);
+    if (!current) return;
+    setPromises((prev) => prev.filter((p) => p.id !== id));
+    toastSuccess('Promise deleted.');
   }
 
   useEffect(() => {
@@ -1462,6 +1540,11 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
     toastSuccess('Note added.');
   }
 
+  function updateNote(note: Note) {
+    setNotes((prev) => prev.map((n) => (n.id === note.id ? note : n)));
+    toastSuccess('Note updated.');
+  }
+
   function deleteNote(id: string) {
     const note = notes.find((n) => n.id === id);
     if (!note) return;
@@ -1519,6 +1602,29 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
       description: `Follow-up scheduled for ${safeDate(input.followUpDate)}.`,
     });
     toastSuccess('Follow-up scheduled.');
+  }
+
+  function updateFollowUp(item: FollowUp) {
+    setFollowUps((prev) => prev.map((f) => (f.id === item.id ? item : f)));
+    setCustomers((prev) =>
+      prev.map((c) => (c.id === item.customerId ? { ...c, nextFollowUp: item.followUpDate } : c)),
+    );
+    toastSuccess('Follow-up updated.');
+  }
+
+  function deleteFollowUp(id: string) {
+    const item = followUps.find((f) => f.id === id);
+    if (!item) return;
+    const remaining = followUps.filter((f) => f.id !== id && f.customerId === item.customerId);
+    setFollowUps((prev) => prev.filter((f) => f.id !== id));
+    setCustomers((prev) =>
+      prev.map((c) =>
+        c.id === item.customerId
+          ? { ...c, nextFollowUp: remaining[0]?.followUpDate || '' }
+          : c,
+      ),
+    );
+    toastSuccess('Follow-up deleted.');
   }
 
   function cancelService(input: {
@@ -1613,6 +1719,13 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
     toastSuccess('Equipment updated.');
   }
 
+  function deleteEquipment(id: string) {
+    const item = equipment.find((e) => e.id === id);
+    if (!item) return;
+    setEquipment((prev) => prev.filter((e) => e.id !== id));
+    toastSuccess('Equipment deleted.');
+  }
+
   function createRecoveryJob(input: {
     customerId: string;
     equipmentIds: string[];
@@ -1663,6 +1776,13 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
 
   function updateRecovery(job: RecoveryJob) {
     setRecoveries((prev) => prev.map((r) => (r.id === job.id ? job : r)));
+  }
+
+  function deleteRecovery(id: string) {
+    const job = recoveries.find((r) => r.id === id);
+    if (!job) return;
+    setRecoveries((prev) => prev.filter((r) => r.id !== id));
+    toastSuccess('Recovery job deleted.');
   }
 
   function completeRecovery(input: {
@@ -2155,21 +2275,30 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
     deleteCustomers,
     updateStatus,
     recordPayment,
+    updatePayment,
+    deletePayment,
     createPromise,
+    updatePromise,
     updatePromiseStatus,
+    deletePromise,
     sendMessage,
     sendBulkEmails,
     syncInbox,
     markCommunicationRead,
     logCall,
     addNote,
+    updateNote,
     deleteNote,
     scheduleFollowUp,
+    updateFollowUp,
+    deleteFollowUp,
     cancelService,
     addEquipment,
     updateEquipment,
+    deleteEquipment,
     createRecoveryJob,
     updateRecovery,
+    deleteRecovery,
     completeRecovery,
     importRows,
     importFile,

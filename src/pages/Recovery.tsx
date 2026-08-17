@@ -2,19 +2,24 @@ import { useState } from 'react';
 import { Badge, Button, Card, Group } from '@mantine/core';
 import { Building2, Truck } from 'lucide-react';
 import { useNavigate } from 'react-router-dom';
+import { ConfirmModal, RowActionsMenu } from '../components/CustomerTable';
 import { EmptyState, PageHero } from '../components/ui';
 import { useApp } from '../context/AppContext';
-import { CompleteRecoveryModal } from '../modals/ActionModals';
-import { recoveryColor, safeDate, todayIso } from '../utils';
+import { CompleteRecoveryModal, CreateRecoveryJobModal } from '../modals/ActionModals';
+import type { RecoveryJob } from '../types';
+import { actorName, recoveryColor, safeDate, todayIso } from '../utils';
 
 export default function Recovery() {
   const navigate = useNavigate();
-  const { company, companyRecoveries, getCustomer, updateRecovery } = useApp();
+  const { company, companyRecoveries, getCustomer, updateRecovery, deleteRecovery } = useApp();
   const [completeJobId, setCompleteJobId] = useState<string | null>(null);
+  const [editJob, setEditJob] = useState<RecoveryJob | null>(null);
+  const [deleteJob, setDeleteJob] = useState<RecoveryJob | null>(null);
 
   const openCount = companyRecoveries.filter(
     (r) => !['Recovered', 'Closed', 'Written Off'].includes(r.status),
   ).length;
+  const editCustomer = editJob ? getCustomer(editJob.customerId) || null : null;
 
   return (
     <>
@@ -52,9 +57,15 @@ export default function Recovery() {
                     {r.id} · {c?.accountNo}
                   </div>
                 </div>
-                <Badge variant="light" color={recoveryColor[r.status] || 'gray'} size="sm">
-                  {r.status}
-                </Badge>
+                <Group gap={6} wrap="nowrap">
+                  <Badge variant="light" color={recoveryColor[r.status] || 'gray'} size="sm">
+                    {r.status}
+                  </Badge>
+                  <RowActionsMenu
+                    onEdit={() => setEditJob(r)}
+                    onDelete={() => setDeleteJob(r)}
+                  />
+                </Group>
               </div>
               <div className="recovery-meta">
                 <div>
@@ -85,7 +96,7 @@ export default function Recovery() {
                       updateRecovery({
                         ...r,
                         status: 'Scheduled',
-                        technician: r.technician === 'Unassigned' ? 'Fortune' : r.technician,
+                        technician: r.technician === 'Unassigned' ? actorName() : r.technician,
                         scheduledDate: r.scheduledDate || todayIso(),
                       })
                     }
@@ -130,6 +141,27 @@ export default function Recovery() {
         opened={!!completeJobId}
         onClose={() => setCompleteJobId(null)}
         jobId={completeJobId}
+      />
+      <CreateRecoveryJobModal
+        opened={!!editJob}
+        onClose={() => setEditJob(null)}
+        customer={editCustomer}
+        existing={editJob}
+      />
+      <ConfirmModal
+        opened={!!deleteJob}
+        onClose={() => setDeleteJob(null)}
+        title="Delete recovery job"
+        message={
+          deleteJob
+            ? `Remove recovery job ${deleteJob.id}? This does not delete the linked equipment.`
+            : ''
+        }
+        confirmLabel="Delete job"
+        onConfirm={() => {
+          if (deleteJob) deleteRecovery(deleteJob.id);
+          setDeleteJob(null);
+        }}
       />
     </>
   );

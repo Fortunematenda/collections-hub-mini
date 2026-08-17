@@ -18,9 +18,13 @@ import type {
   Customer,
   Equipment,
   EquipmentCondition,
+  FollowUp,
+  Note,
   NoteType,
+  RecoveryJob,
 } from '../types';
 import { useApp } from '../context/AppContext';
+import { UserSelect } from '../components/UserSelect';
 import { todayIso, actorName } from '../utils';
 
 const modalProps = { radius: 'lg' as const, centered: true, className: 'app-modal', size: 'lg' as const };
@@ -103,12 +107,14 @@ export function AddNoteModal({
   opened,
   onClose,
   customer,
+  existing,
 }: {
   opened: boolean;
   onClose: () => void;
   customer: Customer | null;
+  existing?: Note | null;
 }) {
-  const { addNote } = useApp();
+  const { addNote, updateNote } = useApp();
   const [note, setNote] = useState('');
   const [type, setType] = useState<NoteType>('General');
   const [pinned, setPinned] = useState(false);
@@ -116,16 +122,16 @@ export function AddNoteModal({
 
   useEffect(() => {
     if (opened) {
-      setNote('');
-      setType('General');
-      setPinned(false);
+      setNote(existing?.note || '');
+      setType(existing?.type || 'General');
+      setPinned(Boolean(existing?.pinned));
     }
-  }, [opened]);
+  }, [opened, existing]);
 
   if (!customer) return null;
 
   return (
-    <Modal opened={opened} onClose={onClose} title="Add note" {...modalProps}>
+    <Modal opened={opened} onClose={onClose} title={existing ? 'Edit note' : 'Add note'} {...modalProps}>
       <Stack>
         <Select
           label="Note type"
@@ -144,12 +150,16 @@ export function AddNoteModal({
             disabled={!note.trim()}
             onClick={() => {
               setSaving(true);
-              addNote({ customerId: customer.id, note, type, pinned });
+              if (existing) {
+                updateNote({ ...existing, note, type, pinned });
+              } else {
+                addNote({ customerId: customer.id, note, type, pinned });
+              }
               setSaving(false);
               onClose();
             }}
           >
-            Save Note
+            {existing ? 'Save changes' : 'Save Note'}
           </Button>
         </Group>
       </Stack>
@@ -161,12 +171,14 @@ export function ScheduleFollowUpModal({
   opened,
   onClose,
   customer,
+  existing,
 }: {
   opened: boolean;
   onClose: () => void;
   customer: Customer | null;
+  existing?: FollowUp | null;
 }) {
-  const { scheduleFollowUp } = useApp();
+  const { scheduleFollowUp, updateFollowUp } = useApp();
   const [followUpDate, setFollowUpDate] = useState(todayIso());
   const [followUpTime, setFollowUpTime] = useState('09:00');
   const [channel, setChannel] = useState<CommChannel | 'Any'>('Email');
@@ -176,18 +188,18 @@ export function ScheduleFollowUpModal({
 
   useEffect(() => {
     if (opened && customer) {
-      setFollowUpDate(customer.nextFollowUp || todayIso());
-      setFollowUpTime('09:00');
-      setChannel('Email');
-      setAssignedUser(customer.assignedCollector || actorName());
-      setNotes('');
+      setFollowUpDate(existing?.followUpDate || customer.nextFollowUp || todayIso());
+      setFollowUpTime(existing?.followUpTime || '09:00');
+      setChannel(existing?.channel || 'Email');
+      setAssignedUser(existing?.assignedUser || customer.assignedCollector || actorName());
+      setNotes(existing?.notes || '');
     }
-  }, [opened, customer]);
+  }, [opened, customer, existing]);
 
   if (!customer) return null;
 
   return (
-    <Modal opened={opened} onClose={onClose} title="Schedule follow-up" {...modalProps}>
+    <Modal opened={opened} onClose={onClose} title={existing ? 'Edit follow-up' : 'Schedule follow-up'} {...modalProps}>
       <Stack>
         <SimpleGrid cols={{ base: 1, sm: 2 }}>
           <TextInput label="Follow-up date" type="date" value={followUpDate} onChange={(e) => setFollowUpDate(e.currentTarget.value)} />
@@ -199,7 +211,7 @@ export function ScheduleFollowUpModal({
           value={channel}
           onChange={(v) => setChannel((v || 'Any') as CommChannel | 'Any')}
         />
-        <TextInput label="Assigned user" value={assignedUser} onChange={(e) => setAssignedUser(e.currentTarget.value)} />
+        <UserSelect label="Assigned user" value={assignedUser} onChange={setAssignedUser} />
         <Textarea label="Notes" value={notes} onChange={(e) => setNotes(e.currentTarget.value)} />
         <Group justify="flex-end">
           <Button variant="default" onClick={onClose}>
@@ -209,12 +221,23 @@ export function ScheduleFollowUpModal({
             loading={saving}
             onClick={() => {
               setSaving(true);
-              scheduleFollowUp({ customerId: customer.id, followUpDate, followUpTime, channel, assignedUser, notes });
+              if (existing) {
+                updateFollowUp({
+                  ...existing,
+                  followUpDate,
+                  followUpTime,
+                  channel,
+                  assignedUser,
+                  notes,
+                });
+              } else {
+                scheduleFollowUp({ customerId: customer.id, followUpDate, followUpTime, channel, assignedUser, notes });
+              }
               setSaving(false);
               onClose();
             }}
           >
-            Schedule
+            {existing ? 'Save changes' : 'Schedule'}
           </Button>
         </Group>
       </Stack>
@@ -398,12 +421,14 @@ export function CreateRecoveryJobModal({
   opened,
   onClose,
   customer,
+  existing,
 }: {
   opened: boolean;
   onClose: () => void;
   customer: Customer | null;
+  existing?: RecoveryJob | null;
 }) {
-  const { equipment, createRecoveryJob } = useApp();
+  const { equipment, createRecoveryJob, updateRecovery, toastSuccess } = useApp();
   const [selected, setSelected] = useState<string[]>([]);
   const [reason, setReason] = useState('Service cancelled / unpaid');
   const [priority, setPriority] = useState<'Low' | 'Medium' | 'High'>('Medium');
@@ -419,20 +444,20 @@ export function CreateRecoveryJobModal({
 
   useEffect(() => {
     if (opened && customer) {
-      setSelected(available.map((e) => e.id));
-      setReason('Service cancelled / unpaid');
-      setPriority('Medium');
-      setTechnician('Unassigned');
-      setScheduledDate('');
-      setContactInstructions('');
-      setInternalNotes('');
+      setSelected(existing?.equipmentIds?.length ? existing.equipmentIds : available.map((e) => e.id));
+      setReason(existing?.reason || 'Service cancelled / unpaid');
+      setPriority(existing?.priority || 'Medium');
+      setTechnician(existing?.technician || 'Unassigned');
+      setScheduledDate(existing?.scheduledDate || '');
+      setContactInstructions(existing?.contactInstructions || '');
+      setInternalNotes(existing?.internalNotes || '');
     }
-  }, [opened, customer?.id]);
+  }, [opened, customer?.id, existing?.id]);
 
   if (!customer) return null;
 
   return (
-    <Modal opened={opened} onClose={onClose} title="Create recovery job" {...modalProps}>
+    <Modal opened={opened} onClose={onClose} title={existing ? 'Edit recovery job' : 'Create recovery job'} {...modalProps}>
       <Stack>
         <Text size="sm" fw={600}>
           {customer.name} · {customer.accountNo}
@@ -457,8 +482,21 @@ export function CreateRecoveryJobModal({
           ))
         )}
         <TextInput label="Recovery reason" value={reason} onChange={(e) => setReason(e.currentTarget.value)} />
-        <Select label="Priority" data={['Low', 'Medium', 'High']} value={priority} onChange={(v) => setPriority((v || 'Medium') as 'Low' | 'Medium' | 'High')} />
-        <TextInput label="Technician" value={technician} onChange={(e) => setTechnician(e.currentTarget.value)} />
+        <Select
+          label="Priority"
+          data={['Low', 'Medium', 'High']}
+          value={priority}
+          onChange={(v) => setPriority((v || 'Medium') as 'Low' | 'Medium' | 'High')}
+          allowDeselect={false}
+          comboboxProps={{ withinPortal: true, zIndex: 500 }}
+        />
+        <UserSelect
+          label="Technician"
+          value={technician}
+          onChange={setTechnician}
+          includeUnassigned
+          placeholder="Select a technician"
+        />
         <TextInput label="Scheduled date" type="date" value={scheduledDate} onChange={(e) => setScheduledDate(e.currentTarget.value)} />
         <Textarea label="Customer contact instructions" value={contactInstructions} onChange={(e) => setContactInstructions(e.currentTarget.value)} />
         <Textarea label="Internal notes" value={internalNotes} onChange={(e) => setInternalNotes(e.currentTarget.value)} />
@@ -470,21 +508,36 @@ export function CreateRecoveryJobModal({
             loading={saving}
             onClick={() => {
               setSaving(true);
-              createRecoveryJob({
-                customerId: customer.id,
-                equipmentIds: selected,
-                reason,
-                priority,
-                technician,
-                scheduledDate: scheduledDate || undefined,
-                contactInstructions,
-                internalNotes,
-              });
+              if (existing) {
+                updateRecovery({
+                  ...existing,
+                  equipmentIds: selected,
+                  reason,
+                  priority,
+                  technician,
+                  scheduledDate: scheduledDate || undefined,
+                  contactInstructions,
+                  internalNotes,
+                  status: scheduledDate ? (existing.status === 'Awaiting assignment' ? 'Scheduled' : existing.status) : existing.status,
+                });
+                toastSuccess('Recovery job updated.');
+              } else {
+                createRecoveryJob({
+                  customerId: customer.id,
+                  equipmentIds: selected,
+                  reason,
+                  priority,
+                  technician,
+                  scheduledDate: scheduledDate || undefined,
+                  contactInstructions,
+                  internalNotes,
+                });
+              }
               setSaving(false);
               onClose();
             }}
           >
-            Create Recovery Job
+            {existing ? 'Save changes' : 'Create Recovery Job'}
           </Button>
         </Group>
       </Stack>

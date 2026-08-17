@@ -1,10 +1,13 @@
+import { useState } from 'react';
 import { Badge, Button, Card, Divider, Group, SimpleGrid, Text } from '@mantine/core';
 import { Building2, CalendarClock } from 'lucide-react';
 import { useNavigate } from 'react-router-dom';
+import { ConfirmModal, RowActionsMenu } from '../components/CustomerTable';
 import { CustomerIdentity, EmptyState, PageHero } from '../components/ui';
 import { useApp } from '../context/AppContext';
+import { PromiseToPayModal } from '../modals/CoreModals';
 import { money, safeDate } from '../utils';
-import type { PromiseStatus } from '../types';
+import type { PaymentPromise, PromiseStatus } from '../types';
 
 const promiseColor: Record<PromiseStatus, string> = {
   Pending: 'blue',
@@ -15,8 +18,11 @@ const promiseColor: Record<PromiseStatus, string> = {
 
 export default function Promises() {
   const navigate = useNavigate();
-  const { company, companyPromises, getCustomer, updatePromiseStatus } = useApp();
+  const { company, companyPromises, getCustomer, updatePromiseStatus, deletePromise } = useApp();
   const promises = companyPromises();
+  const [editPromise, setEditPromise] = useState<PaymentPromise | null>(null);
+  const [deleteItem, setDeleteItem] = useState<PaymentPromise | null>(null);
+  const editCustomer = editPromise ? getCustomer(editPromise.customerId) || null : null;
 
   return (
     <>
@@ -41,9 +47,15 @@ export default function Promises() {
                   name={customer?.name || 'Unknown customer'}
                   accountNo={customer?.accountNo}
                 />
-                <Badge variant="light" color={promiseColor[p.status]}>
-                  {p.status}
-                </Badge>
+                <Group gap={6} wrap="nowrap">
+                  <Badge variant="light" color={promiseColor[p.status]}>
+                    {p.status}
+                  </Badge>
+                  <RowActionsMenu
+                    onEdit={() => setEditPromise(p)}
+                    onDelete={() => setDeleteItem(p)}
+                  />
+                </Group>
               </Group>
               <Divider my="md" />
               <Group justify="space-between">
@@ -109,6 +121,28 @@ export default function Promises() {
           />
         </Card>
       )}
+
+      <PromiseToPayModal
+        opened={!!editPromise}
+        onClose={() => setEditPromise(null)}
+        customer={editCustomer}
+        existing={editPromise}
+      />
+      <ConfirmModal
+        opened={!!deleteItem}
+        onClose={() => setDeleteItem(null)}
+        title="Delete promise"
+        message={
+          deleteItem
+            ? `Remove the promise of ${money(deleteItem.amount)} due ${safeDate(deleteItem.promiseDate)}?`
+            : ''
+        }
+        confirmLabel="Delete promise"
+        onConfirm={() => {
+          if (deleteItem) deletePromise(deleteItem.id);
+          setDeleteItem(null);
+        }}
+      />
     </>
   );
 }

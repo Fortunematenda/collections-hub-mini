@@ -744,6 +744,15 @@ app.delete('/api/roles/:id', authRequired, requirePermission('roles.manage'), (r
   return res.json({ ok: true });
 });
 
+app.get('/api/users/directory', authRequired, (_req, res) => {
+  res.json({
+    ok: true,
+    users: users
+      .filter((u) => u.active !== false)
+      .map((u) => ({ id: u.id, name: u.name, email: u.email })),
+  });
+});
+
 app.get('/api/users', authRequired, requirePermission('users.manage', 'roles.manage'), (_req, res) => {
   res.json({
     ok: true,

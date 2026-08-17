@@ -34,7 +34,7 @@ import {
   Wrench,
 } from 'lucide-react';
 import { useNavigate, useParams, useSearchParams } from 'react-router-dom';
-import { ConfirmModal, MoreActionsMenu } from '../components/CustomerTable';
+import { ConfirmModal, MoreActionsMenu, RowActionsMenu } from '../components/CustomerTable';
 import { EmptyState, Info, EmailThreadPreview } from '../components/ui';
 import { useApp } from '../context/AppContext';
 import {
@@ -47,8 +47,9 @@ import {
   ScheduleFollowUpModal,
 } from '../modals/ActionModals';
 import { CustomerFormModal, MarkPaidModal, PromiseToPayModal, SendMessageModal } from '../modals/CoreModals';
-import type { Communication, Equipment, NoteType } from '../types';
+import type { Communication, Equipment, FollowUp, Note, NoteType, Payment, PaymentPromise, RecoveryJob } from '../types';
 import {
+  actorName,
   amountClass,
   daysOverdue,
   fullAddress,
@@ -77,6 +78,13 @@ type ModalKey =
   | 'completeRecovery'
   | 'archive'
   | null;
+
+type PendingDelete = {
+  title: string;
+  message: string;
+  confirmLabel: string;
+  run: () => void;
+};
 
 const CUSTOMER_TABS = [
   'overview',
@@ -108,6 +116,12 @@ export default function CustomerDetails() {
     archiveCustomer,
     updateEquipment,
     updateRecovery,
+    deleteFollowUp,
+    deletePromise,
+    deletePayment,
+    deleteNote,
+    deleteEquipment,
+    deleteRecovery,
     switchCompany,
     companyId,
     loading,
@@ -123,6 +137,12 @@ export default function CustomerDetails() {
   }, [customer?.companyId, companyId]);
   const [modal, setModal] = useState<ModalKey>(null);
   const [editEquipment, setEditEquipment] = useState<Equipment | null>(null);
+  const [editFollowUp, setEditFollowUp] = useState<FollowUp | null>(null);
+  const [editPromise, setEditPromise] = useState<PaymentPromise | null>(null);
+  const [editPayment, setEditPayment] = useState<Payment | null>(null);
+  const [editNote, setEditNote] = useState<Note | null>(null);
+  const [editRecovery, setEditRecovery] = useState<RecoveryJob | null>(null);
+  const [pendingDelete, setPendingDelete] = useState<PendingDelete | null>(null);
   const [completeJobId, setCompleteJobId] = useState<string | null>(null);
   const [noteFilter, setNoteFilter] = useState<string | null>('All');
   const [expandedComm, setExpandedComm] = useState<string | null>(null);
@@ -140,6 +160,32 @@ export default function CustomerDetails() {
   function openMessage(reply?: Communication | null) {
     setReplyComm(reply || null);
     setModal('message');
+  }
+
+  function openCreate(key: ModalKey) {
+    setEditEquipment(null);
+    setEditFollowUp(null);
+    setEditPromise(null);
+    setEditPayment(null);
+    setEditNote(null);
+    setEditRecovery(null);
+    setModal(key);
+  }
+
+  function closeModals() {
+    setModal(null);
+    setEditEquipment(null);
+    setEditFollowUp(null);
+    setEditPromise(null);
+    setEditPayment(null);
+    setEditNote(null);
+    setEditRecovery(null);
+    setCompleteJobId(null);
+    setReplyComm(null);
+  }
+
+  function askDelete(item: PendingDelete) {
+    setPendingDelete(item);
   }
 
   const equipment = companyEquipment(customer?.id);
@@ -212,7 +258,7 @@ export default function CustomerDetails() {
             <Button size="compact-sm" variant="light" leftSection={<Phone size={14} />} onClick={() => setModal('call')}>
               Call
             </Button>
-            <Button size="compact-sm" variant="light" color="teal" leftSection={<Banknote size={14} />} onClick={() => setModal('payment')}>
+            <Button size="compact-sm" variant="light" color="teal" leftSection={<Banknote size={14} />} onClick={() => openCreate('payment')}>
               Payment
             </Button>
             <Button size="compact-sm" variant="default" leftSection={<Edit size={14} />} onClick={() => setModal('edit')}>
@@ -220,10 +266,10 @@ export default function CustomerDetails() {
             </Button>
             <MoreActionsMenu
               items={[
-                { label: 'Promise to Pay', onClick: () => setModal('promise'), icon: <CalendarClock size={14} /> },
-                { label: 'Add Note', onClick: () => setModal('note'), icon: <NotebookPen size={14} /> },
-                { label: 'Schedule Follow-up', onClick: () => setModal('followup'), icon: <CalendarClock size={14} /> },
-                { label: 'Create Recovery Job', onClick: () => setModal('recovery'), icon: <Truck size={14} /> },
+                { label: 'Promise to Pay', onClick: () => openCreate('promise'), icon: <CalendarClock size={14} /> },
+                { label: 'Add Note', onClick: () => openCreate('note'), icon: <NotebookPen size={14} /> },
+                { label: 'Schedule Follow-up', onClick: () => openCreate('followup'), icon: <CalendarClock size={14} /> },
+                { label: 'Create Recovery Job', onClick: () => openCreate('recovery'), icon: <Truck size={14} /> },
                 { label: 'Cancel Service', onClick: () => setModal('cancel'), icon: <Archive size={14} />, color: 'orange' },
                 { label: 'Archive Customer', onClick: () => setModal('archive'), icon: <Archive size={14} />, color: 'red' },
               ]}
@@ -238,16 +284,16 @@ export default function CustomerDetails() {
           <Button size="compact-sm" variant="light" leftSection={<Phone size={14} />} onClick={() => setModal('call')}>
             Log Call
           </Button>
-          <Button size="compact-sm" variant="light" color="blue" leftSection={<CalendarClock size={14} />} onClick={() => setModal('promise')}>
+          <Button size="compact-sm" variant="light" color="blue" leftSection={<CalendarClock size={14} />} onClick={() => openCreate('promise')}>
             Promise to Pay
           </Button>
-          <Button size="compact-sm" variant="light" color="teal" leftSection={<Banknote size={14} />} onClick={() => setModal('payment')}>
+          <Button size="compact-sm" variant="light" color="teal" leftSection={<Banknote size={14} />} onClick={() => openCreate('payment')}>
             Record Payment
           </Button>
-          <Button size="compact-sm" variant="light" leftSection={<NotebookPen size={14} />} onClick={() => setModal('note')}>
+          <Button size="compact-sm" variant="light" leftSection={<NotebookPen size={14} />} onClick={() => openCreate('note')}>
             Add Note
           </Button>
-          <Button size="compact-sm" variant="light" leftSection={<CalendarClock size={14} />} onClick={() => setModal('followup')}>
+          <Button size="compact-sm" variant="light" leftSection={<CalendarClock size={14} />} onClick={() => openCreate('followup')}>
             Schedule Follow-up
           </Button>
           <Button size="compact-sm" variant="default" leftSection={<Edit size={14} />} onClick={() => setModal('edit')}>
@@ -255,7 +301,7 @@ export default function CustomerDetails() {
           </Button>
           <MoreActionsMenu
             items={[
-              { label: 'Create Recovery Job', onClick: () => setModal('recovery'), icon: <Truck size={14} /> },
+              { label: 'Create Recovery Job', onClick: () => openCreate('recovery'), icon: <Truck size={14} /> },
               { label: 'Cancel Service', onClick: () => setModal('cancel'), icon: <Archive size={14} />, color: 'orange' },
               { label: 'Archive Customer', onClick: () => setModal('archive'), icon: <Archive size={14} />, color: 'red' },
             ]}
@@ -276,23 +322,23 @@ export default function CustomerDetails() {
               <Menu.Item leftSection={<Phone size={14} />} onClick={() => setModal('call')}>
                 Log Call
               </Menu.Item>
-              <Menu.Item leftSection={<CalendarClock size={14} />} onClick={() => setModal('promise')}>
+              <Menu.Item leftSection={<CalendarClock size={14} />} onClick={() => openCreate('promise')}>
                 Promise to Pay
               </Menu.Item>
-              <Menu.Item leftSection={<Banknote size={14} />} onClick={() => setModal('payment')}>
+              <Menu.Item leftSection={<Banknote size={14} />} onClick={() => openCreate('payment')}>
                 Record Payment
               </Menu.Item>
-              <Menu.Item leftSection={<NotebookPen size={14} />} onClick={() => setModal('note')}>
+              <Menu.Item leftSection={<NotebookPen size={14} />} onClick={() => openCreate('note')}>
                 Add Note
               </Menu.Item>
-              <Menu.Item leftSection={<CalendarClock size={14} />} onClick={() => setModal('followup')}>
+              <Menu.Item leftSection={<CalendarClock size={14} />} onClick={() => openCreate('followup')}>
                 Schedule Follow-up
               </Menu.Item>
               <Menu.Item leftSection={<Edit size={14} />} onClick={() => setModal('edit')}>
                 Edit Customer
               </Menu.Item>
               <Menu.Divider />
-              <Menu.Item leftSection={<Truck size={14} />} onClick={() => setModal('recovery')}>
+              <Menu.Item leftSection={<Truck size={14} />} onClick={() => openCreate('recovery')}>
                 Create Recovery Job
               </Menu.Item>
               <Menu.Item color="orange" leftSection={<Archive size={14} />} onClick={() => setModal('cancel')}>
@@ -421,7 +467,7 @@ export default function CustomerDetails() {
             <Card className="card" radius="lg" p="lg" style={{ gridColumn: '1 / -1' }}>
               <Group justify="space-between">
                 <div className="card-title">Equipment Summary</div>
-                <Button size="xs" variant="light" leftSection={<Plus size={12} />} onClick={() => { setEditEquipment(null); setModal('equipment'); }}>
+                <Button size="xs" variant="light" leftSection={<Plus size={12} />} onClick={() => openCreate('equipment')}>
                   Add Equipment
                 </Button>
               </Group>
@@ -559,7 +605,12 @@ export default function CustomerDetails() {
               </SimpleGrid>
             </Card>
             <Card className="card" radius="lg" p="lg">
-              <div className="card-title">Pipeline stage</div>
+              <Group justify="space-between" mb="xs">
+                <div className="card-title">Scheduled follow-ups</div>
+                <Button size="xs" variant="light" leftSection={<Plus size={12} />} onClick={() => openCreate('followup')}>
+                  Schedule
+                </Button>
+              </Group>
               <Text size="sm" mt="md" fw={650}>
                 {customer.collectionStage || customer.status}
               </Text>
@@ -568,10 +619,31 @@ export default function CustomerDetails() {
               </Text>
               <Stack gap={6} mt="md">
                 {followUps.map((f) => (
-                  <Text key={f.id} size="xs">
-                    Follow-up {safeDate(f.followUpDate)} {f.followUpTime || ''} · {f.channel} · {f.assignedUser}
-                  </Text>
+                  <Group key={f.id} justify="space-between" wrap="nowrap" align="flex-start">
+                    <Text size="xs">
+                      Follow-up {safeDate(f.followUpDate)} {f.followUpTime || ''} · {f.channel} · {f.assignedUser}
+                    </Text>
+                    <RowActionsMenu
+                      onEdit={() => {
+                        setEditFollowUp(f);
+                        setModal('followup');
+                      }}
+                      onDelete={() =>
+                        askDelete({
+                          title: 'Delete follow-up',
+                          message: `Remove the follow-up scheduled for ${safeDate(f.followUpDate)}?`,
+                          confirmLabel: 'Delete follow-up',
+                          run: () => deleteFollowUp(f.id),
+                        })
+                      }
+                    />
+                  </Group>
                 ))}
+                {followUps.length === 0 && (
+                  <Text size="xs" c="dimmed">
+                    No follow-ups scheduled.
+                  </Text>
+                )}
               </Stack>
             </Card>
           </SimpleGrid>
@@ -581,7 +653,7 @@ export default function CustomerDetails() {
           <Card className="card" radius="lg" p="lg">
             <Group justify="space-between" mb="md">
               <div className="card-title">Payment promises</div>
-              <Button size="xs" leftSection={<Plus size={12} />} onClick={() => setModal('promise')}>
+              <Button size="xs" leftSection={<Plus size={12} />} onClick={() => openCreate('promise')}>
                 Add promise
               </Button>
             </Group>
@@ -595,6 +667,7 @@ export default function CustomerDetails() {
                     <Table.Th>Status</Table.Th>
                     <Table.Th>Notes</Table.Th>
                     <Table.Th>Outcome</Table.Th>
+                    <Table.Th />
                   </Table.Tr>
                 </Table.Thead>
                 <Table.Tbody>
@@ -613,6 +686,22 @@ export default function CustomerDetails() {
                         {p.outcome ||
                           (p.status === 'Pending' ? 'Awaiting payment' : p.status === 'Kept' ? 'Paid' : p.status)}
                       </Table.Td>
+                      <Table.Td>
+                        <RowActionsMenu
+                          onEdit={() => {
+                            setEditPromise(p);
+                            setModal('promise');
+                          }}
+                          onDelete={() =>
+                            askDelete({
+                              title: 'Delete promise',
+                              message: `Remove the promise of ${money(p.amount)} due ${safeDate(p.promiseDate)}?`,
+                              confirmLabel: 'Delete promise',
+                              run: () => deletePromise(p.id),
+                            })
+                          }
+                        />
+                      </Table.Td>
                     </Table.Tr>
                   ))}
                 </Table.Tbody>
@@ -625,9 +714,25 @@ export default function CustomerDetails() {
                     <Text size="xs" fw={650}>
                       {money(p.amount)}
                     </Text>
-                    <Badge size="sm" variant="light">
-                      {p.status}
-                    </Badge>
+                    <Group gap={6}>
+                      <Badge size="sm" variant="light">
+                        {p.status}
+                      </Badge>
+                      <RowActionsMenu
+                        onEdit={() => {
+                          setEditPromise(p);
+                          setModal('promise');
+                        }}
+                        onDelete={() =>
+                          askDelete({
+                            title: 'Delete promise',
+                            message: `Remove the promise of ${money(p.amount)} due ${safeDate(p.promiseDate)}?`,
+                            confirmLabel: 'Delete promise',
+                            run: () => deletePromise(p.id),
+                          })
+                        }
+                      />
+                    </Group>
                   </Group>
                   <Text size="xs" c="dimmed" mt={6}>
                     Due {safeDate(p.promiseDate)}
@@ -643,7 +748,7 @@ export default function CustomerDetails() {
           <Card className="card" radius="lg" p="lg">
             <Group justify="space-between" mb="md">
               <div className="card-title">Payments</div>
-              <Button size="xs" leftSection={<Plus size={12} />} onClick={() => setModal('payment')}>
+              <Button size="xs" leftSection={<Plus size={12} />} onClick={() => openCreate('payment')}>
                 Record payment
               </Button>
             </Group>
@@ -657,6 +762,7 @@ export default function CustomerDetails() {
                     <Table.Th>Method</Table.Th>
                     <Table.Th>Recorded by</Table.Th>
                     <Table.Th>Notes</Table.Th>
+                    <Table.Th />
                   </Table.Tr>
                 </Table.Thead>
                 <Table.Tbody>
@@ -668,6 +774,22 @@ export default function CustomerDetails() {
                       <Table.Td>{p.method || '—'}</Table.Td>
                       <Table.Td>{p.recordedBy}</Table.Td>
                       <Table.Td>{p.notes || '—'}</Table.Td>
+                      <Table.Td>
+                        <RowActionsMenu
+                          onEdit={() => {
+                            setEditPayment(p);
+                            setModal('payment');
+                          }}
+                          onDelete={() =>
+                            askDelete({
+                              title: 'Delete payment',
+                              message: `Remove the payment of ${money(p.amount)} recorded on ${safeDate(p.paymentDate)}? The amount will be added back to the outstanding balance.`,
+                              confirmLabel: 'Delete payment',
+                              run: () => deletePayment(p.id),
+                            })
+                          }
+                        />
+                      </Table.Td>
                     </Table.Tr>
                   ))}
                 </Table.Tbody>
@@ -681,7 +803,7 @@ export default function CustomerDetails() {
           <Card className="card" radius="lg" p="lg">
             <Group justify="space-between" mb="md">
               <div className="card-title">Equipment</div>
-              <Button size="xs" leftSection={<Plus size={12} />} onClick={() => { setEditEquipment(null); setModal('equipment'); }}>
+              <Button size="xs" leftSection={<Plus size={12} />} onClick={() => openCreate('equipment')}>
                 Add Equipment
               </Button>
             </Group>
@@ -692,9 +814,25 @@ export default function CustomerDetails() {
                     <Text size="sm" fw={700}>
                       {e.type}
                     </Text>
-                    <Badge size="sm" variant="light">
-                      {e.status}
-                    </Badge>
+                    <Group gap={6}>
+                      <Badge size="sm" variant="light">
+                        {e.status}
+                      </Badge>
+                      <RowActionsMenu
+                        onEdit={() => {
+                          setEditEquipment(e);
+                          setModal('equipment');
+                        }}
+                        onDelete={() =>
+                          askDelete({
+                            title: 'Delete equipment',
+                            message: `Remove ${e.type}${e.model ? ` (${e.model})` : ''} from this account?`,
+                            confirmLabel: 'Delete equipment',
+                            run: () => deleteEquipment(e.id),
+                          })
+                        }
+                      />
+                    </Group>
                   </Group>
                   <div className="recovery-meta">
                     <div>
@@ -715,9 +853,6 @@ export default function CustomerDetails() {
                     </div>
                   </div>
                   <Group mt="md" gap={6}>
-                    <Button size="xs" variant="light" onClick={() => { setEditEquipment(e); setModal('equipment'); }}>
-                      Edit
-                    </Button>
                     <Button size="xs" variant="light" color="teal" onClick={() => updateEquipment({ ...e, status: 'Recovered', recoveryRequired: false })}>
                       Mark recovered
                     </Button>
@@ -725,7 +860,7 @@ export default function CustomerDetails() {
                       Mark damaged
                     </Button>
                     {e.ownership === 'Company owned' && (
-                      <Button size="xs" variant="light" color="red" onClick={() => setModal('recovery')}>
+                      <Button size="xs" variant="light" color="red" onClick={() => openCreate('recovery')}>
                         Recovery job
                       </Button>
                     )}
@@ -741,7 +876,7 @@ export default function CustomerDetails() {
           <Card className="card" radius="lg" p="lg">
             <Group justify="space-between" mb="md">
               <div className="card-title">Recovery cases</div>
-              <Button size="xs" leftSection={<Plus size={12} />} onClick={() => setModal('recovery')}>
+              <Button size="xs" leftSection={<Plus size={12} />} onClick={() => openCreate('recovery')}>
                 Create recovery job
               </Button>
             </Group>
@@ -757,9 +892,25 @@ export default function CustomerDetails() {
                         {r.equipment}
                       </Text>
                     </div>
-                    <Badge size="sm" variant="light" color={recoveryColor[r.status]}>
-                      {r.status}
-                    </Badge>
+                    <Group gap={6}>
+                      <Badge size="sm" variant="light" color={recoveryColor[r.status]}>
+                        {r.status}
+                      </Badge>
+                      <RowActionsMenu
+                        onEdit={() => {
+                          setEditRecovery(r);
+                          setModal('recovery');
+                        }}
+                        onDelete={() =>
+                          askDelete({
+                            title: 'Delete recovery job',
+                            message: `Remove recovery job ${r.id}? This does not delete the linked equipment.`,
+                            confirmLabel: 'Delete job',
+                            run: () => deleteRecovery(r.id),
+                          })
+                        }
+                      />
+                    </Group>
                   </Group>
                   <div className="recovery-meta">
                     <div>
@@ -782,7 +933,7 @@ export default function CustomerDetails() {
                   {!['Recovered', 'Closed', 'Written Off'].includes(r.status) && (
                     <Group mt="md">
                       {r.status === 'Awaiting assignment' && (
-                        <Button size="xs" variant="light" onClick={() => updateRecovery({ ...r, status: 'Scheduled', technician: r.technician === 'Unassigned' ? 'Fortune' : r.technician, scheduledDate: r.scheduledDate || new Date().toISOString().slice(0, 10) })}>
+                        <Button size="xs" variant="light" onClick={() => updateRecovery({ ...r, status: 'Scheduled', technician: r.technician === 'Unassigned' ? actorName() : r.technician, scheduledDate: r.scheduledDate || new Date().toISOString().slice(0, 10) })}>
                           Assign & schedule
                         </Button>
                       )}
@@ -815,7 +966,7 @@ export default function CustomerDetails() {
                 onChange={setNoteFilter}
                 w={180}
               />
-              <Button size="xs" leftSection={<Plus size={12} />} onClick={() => setModal('note')}>
+              <Button size="xs" leftSection={<Plus size={12} />} onClick={() => openCreate('note')}>
                 Add note
               </Button>
             </Group>
@@ -833,9 +984,25 @@ export default function CustomerDetails() {
                         </Badge>
                       )}
                     </Group>
-                    <Text size="10px" c="dimmed">
-                      {safeDateTime(n.createdAt)}
-                    </Text>
+                    <Group gap={6}>
+                      <Text size="10px" c="dimmed">
+                        {safeDateTime(n.createdAt)}
+                      </Text>
+                      <RowActionsMenu
+                        onEdit={() => {
+                          setEditNote(n);
+                          setModal('note');
+                        }}
+                        onDelete={() =>
+                          askDelete({
+                            title: 'Delete note',
+                            message: 'Remove this internal note from the account?',
+                            confirmLabel: 'Delete note',
+                            run: () => deleteNote(n.id),
+                          })
+                        }
+                      />
+                    </Group>
                   </Group>
                   <Text size="xs" mt={6}>
                     {n.note}
@@ -874,51 +1041,58 @@ export default function CustomerDetails() {
         </Tabs.Panel>
       </Tabs>
 
-      <CustomerFormModal opened={modal === 'edit'} onClose={() => setModal(null)} customer={customer} companyId={customer.companyId} />
+      <CustomerFormModal opened={modal === 'edit'} onClose={closeModals} customer={customer} companyId={customer.companyId} />
       <SendMessageModal
         opened={modal === 'message'}
-        onClose={() => {
-          setModal(null);
-          setReplyComm(null);
-        }}
+        onClose={closeModals}
         customer={customer}
         defaultChannel="Email"
         replyTo={replyComm}
       />
-      <LogCallModal opened={modal === 'call'} onClose={() => setModal(null)} customer={customer} />
-      <PromiseToPayModal opened={modal === 'promise'} onClose={() => setModal(null)} customer={customer} />
-      <MarkPaidModal opened={modal === 'payment'} onClose={() => setModal(null)} customer={customer} />
-      <AddNoteModal opened={modal === 'note'} onClose={() => setModal(null)} customer={customer} />
-      <ScheduleFollowUpModal opened={modal === 'followup'} onClose={() => setModal(null)} customer={customer} />
-      <CancelServiceModal opened={modal === 'cancel'} onClose={() => setModal(null)} customer={customer} />
+      <LogCallModal opened={modal === 'call'} onClose={closeModals} customer={customer} />
+      <PromiseToPayModal opened={modal === 'promise'} onClose={closeModals} customer={customer} existing={editPromise} />
+      <MarkPaidModal opened={modal === 'payment'} onClose={closeModals} customer={customer} existing={editPayment} />
+      <AddNoteModal opened={modal === 'note'} onClose={closeModals} customer={customer} existing={editNote} />
+      <ScheduleFollowUpModal opened={modal === 'followup'} onClose={closeModals} customer={customer} existing={editFollowUp} />
+      <CancelServiceModal opened={modal === 'cancel'} onClose={closeModals} customer={customer} />
       <EquipmentFormModal
         opened={modal === 'equipment'}
-        onClose={() => {
-          setModal(null);
-          setEditEquipment(null);
-        }}
+        onClose={closeModals}
         customer={customer}
         equipment={editEquipment}
       />
-      <CreateRecoveryJobModal opened={modal === 'recovery'} onClose={() => setModal(null)} customer={customer} />
+      <CreateRecoveryJobModal
+        opened={modal === 'recovery'}
+        onClose={closeModals}
+        customer={customer}
+        existing={editRecovery}
+      />
       <CompleteRecoveryModal
         opened={modal === 'completeRecovery'}
-        onClose={() => {
-          setModal(null);
-          setCompleteJobId(null);
-        }}
+        onClose={closeModals}
         jobId={completeJobId}
       />
       <ConfirmModal
         opened={modal === 'archive'}
-        onClose={() => setModal(null)}
+        onClose={closeModals}
         title="Archive customer"
         message="Archiving hides this customer from active lists. Communication, payment and recovery history is preserved."
         confirmLabel="Archive customer"
         onConfirm={() => {
           archiveCustomer(customer.id);
-          setModal(null);
+          closeModals();
           navigate('/accounts');
+        }}
+      />
+      <ConfirmModal
+        opened={!!pendingDelete}
+        onClose={() => setPendingDelete(null)}
+        title={pendingDelete?.title || 'Delete'}
+        message={pendingDelete?.message || ''}
+        confirmLabel={pendingDelete?.confirmLabel || 'Delete'}
+        onConfirm={() => {
+          pendingDelete?.run();
+          setPendingDelete(null);
         }}
       />
     </>

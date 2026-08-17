@@ -29,14 +29,15 @@ import {
   Users,
 } from 'lucide-react';
 import { useNavigate, useParams, useSearchParams } from 'react-router-dom';
-import { ConfirmModal, CustomerTable, MoreActionsMenu } from '../components/CustomerTable';
+import { ConfirmModal, CustomerTable, MoreActionsMenu, RowActionsMenu } from '../components/CustomerTable';
 import { TablePager } from '../components/TablePager';
 import { EmptyState, EmailThreadPreview, Info, Metric, PageHero } from '../components/ui';
 import { useApp } from '../context/AppContext';
 import { useAuth } from '../context/AuthContext';
 import { useTablePaging } from '../hooks/useTablePaging';
-import type { ImportBatch } from '../types';
-import { CompanyFormModal, CustomerFormModal } from '../modals/CoreModals';
+import type { ImportBatch, PaymentPromise, RecoveryJob } from '../types';
+import { CompanyFormModal, CustomerFormModal, PromiseToPayModal } from '../modals/CoreModals';
+import { CreateRecoveryJobModal } from '../modals/ActionModals';
 import {
   compareAccountNo,
   daysOverdue,
@@ -78,6 +79,8 @@ export default function CompanyDetails() {
     companyId,
     archiveCompany,
     deleteImport,
+    deletePromise,
+    deleteRecovery,
     loading,
   } = useApp();
   const { user } = useAuth();
@@ -88,6 +91,10 @@ export default function CompanyDetails() {
   const [archiveOpen, setArchiveOpen] = useState(false);
   const [pendingImportDelete, setPendingImportDelete] = useState<ImportBatch | null>(null);
   const [addCustomerOpen, setAddCustomerOpen] = useState(false);
+  const [editPromise, setEditPromise] = useState<PaymentPromise | null>(null);
+  const [deletePromiseItem, setDeletePromiseItem] = useState<PaymentPromise | null>(null);
+  const [editRecovery, setEditRecovery] = useState<RecoveryJob | null>(null);
+  const [deleteRecoveryItem, setDeleteRecoveryItem] = useState<RecoveryJob | null>(null);
   const [search, setSearch] = useState('');
   const [statusFilter, setStatusFilter] = useState<string | null>('All statuses');
   const [balanceFilter, setBalanceFilter] = useState<string | null>('All balances');
@@ -398,6 +405,7 @@ export default function CompanyDetails() {
                     <Table.Th>Status</Table.Th>
                     <Table.Th>Outstanding</Table.Th>
                     <Table.Th>Last contact</Table.Th>
+                    <Table.Th />
                   </Table.Tr>
                 </Table.Thead>
                 <Table.Tbody>
@@ -415,6 +423,12 @@ export default function CompanyDetails() {
                         </Table.Td>
                         <Table.Td>{money(c?.outstanding || 0)}</Table.Td>
                         <Table.Td>{c?.lastContact || '—'}</Table.Td>
+                        <Table.Td onClick={(event) => event.stopPropagation()}>
+                          <RowActionsMenu
+                            onEdit={() => setEditPromise(p)}
+                            onDelete={() => setDeletePromiseItem(p)}
+                          />
+                        </Table.Td>
                       </Table.Tr>
                     );
                   })}
@@ -438,9 +452,15 @@ export default function CompanyDetails() {
                         {r.id} · {c?.accountNo}
                       </div>
                     </div>
-                    <Badge variant="light" color={recoveryColor[r.status]} size="sm">
-                      {r.status}
-                    </Badge>
+                    <Group gap={6} wrap="nowrap" onClick={(event) => event.stopPropagation()}>
+                      <Badge variant="light" color={recoveryColor[r.status]} size="sm">
+                        {r.status}
+                      </Badge>
+                      <RowActionsMenu
+                        onEdit={() => setEditRecovery(r)}
+                        onDelete={() => setDeleteRecoveryItem(r)}
+                      />
+                    </Group>
                   </div>
                   <div className="recovery-meta">
                     <div>
@@ -582,6 +602,48 @@ export default function CompanyDetails() {
 
       <CompanyFormModal opened={editOpen} onClose={() => setEditOpen(false)} company={company} />
       <CustomerFormModal opened={addCustomerOpen} onClose={() => setAddCustomerOpen(false)} companyId={company.id} />
+      <PromiseToPayModal
+        opened={!!editPromise}
+        onClose={() => setEditPromise(null)}
+        customer={editPromise ? customers.find((c) => c.id === editPromise.customerId) || null : null}
+        existing={editPromise}
+      />
+      <CreateRecoveryJobModal
+        opened={!!editRecovery}
+        onClose={() => setEditRecovery(null)}
+        customer={editRecovery ? customers.find((c) => c.id === editRecovery.customerId) || null : null}
+        existing={editRecovery}
+      />
+      <ConfirmModal
+        opened={!!deletePromiseItem}
+        onClose={() => setDeletePromiseItem(null)}
+        title="Delete promise"
+        message={
+          deletePromiseItem
+            ? `Remove the promise of ${money(deletePromiseItem.amount)} due ${safeDate(deletePromiseItem.promiseDate)}?`
+            : ''
+        }
+        confirmLabel="Delete promise"
+        onConfirm={() => {
+          if (deletePromiseItem) deletePromise(deletePromiseItem.id);
+          setDeletePromiseItem(null);
+        }}
+      />
+      <ConfirmModal
+        opened={!!deleteRecoveryItem}
+        onClose={() => setDeleteRecoveryItem(null)}
+        title="Delete recovery job"
+        message={
+          deleteRecoveryItem
+            ? `Remove recovery job ${deleteRecoveryItem.id}? This does not delete the linked equipment.`
+            : ''
+        }
+        confirmLabel="Delete job"
+        onConfirm={() => {
+          if (deleteRecoveryItem) deleteRecovery(deleteRecoveryItem.id);
+          setDeleteRecoveryItem(null);
+        }}
+      />
       <ConfirmModal
         opened={!!pendingImportDelete}
         onClose={() => setPendingImportDelete(null)}
