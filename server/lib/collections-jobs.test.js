@@ -30,8 +30,39 @@ test('first run seeds historical mail and does not create promises', () => {
   assert.equal(result.seeded, true);
   assert.equal(result.promisesCreated, 0);
   assert.equal(result.store.promiseEmailSeeded, true);
-  assert.equal(result.store.communications[0].handledAs, 'none');
+  assert.equal(result.store.communications[0].handledAs, 'seeded');
   assert.equal(result.store.promises.length, 0);
+});
+
+test('retries a date-only reply that was marked none', () => {
+  const result = applyEmailPromises({
+    promiseEmailSeeded: true,
+    customers: [
+      {
+        id: 'c1',
+        companyId: 'co1',
+        status: 'Overdue',
+        outstanding: 250,
+        assignedCollector: 'Ada',
+      },
+    ],
+    communications: [
+      {
+        id: 'cm-short',
+        channel: 'Email',
+        direction: 'Incoming',
+        customerId: 'c1',
+        message: 'Next week. Friday',
+        handledAs: 'none',
+      },
+    ],
+    promises: [],
+    followUps: [],
+    activities: [],
+  });
+  assert.equal(result.created, 1);
+  assert.equal(result.store.customers[0].status, 'Promise to Pay');
+  assert.equal(result.store.communications[0].handledAs, 'promise');
 });
 
 test('creates a promise from a new email after seed', () => {

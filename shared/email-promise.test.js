@@ -25,3 +25,22 @@ test('uses only the new reply body', () => {
   assert.match(body, /I will pay Friday/i);
   assert.doesNotMatch(body, /Please pay/);
 });
+
+test('short date-only reply Next week Friday is a promise for that Friday', () => {
+  const parsed = parsePromiseFromReply('Next week. Friday');
+  assert.ok(parsed);
+  assert.equal(parsed.dateInferred, false);
+  const date = new Date(`${parsed.date}T00:00:00`);
+  assert.equal(date.getDay(), 5);
+  const today = new Date();
+  today.setHours(0, 0, 0, 0);
+  const days = Math.round((date.getTime() - today.getTime()) / 86400000);
+  assert.ok(days >= 5 && days <= 13, `expected next week's Friday, got +${days} days`);
+});
+
+test('does not treat a long unrelated Friday mention as a promise', () => {
+  const parsed = parsePromiseFromReply(
+    'Thanks for the statement. We discussed this last Friday with accounts and will revert once we have checked the invoice details on our side.',
+  );
+  assert.equal(parsed, null);
+});

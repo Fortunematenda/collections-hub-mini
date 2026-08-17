@@ -42,6 +42,36 @@ function nextWeekday(from, dayIndex) {
   return date;
 }
 
+function nextWeekMonday(from) {
+  const date = startOfDay(from);
+  const untilMonday = (8 - date.getDay()) % 7 || 7;
+  return addDays(date, untilMonday);
+}
+
+function weekdayInNextWeek(from, dayIndex) {
+  const monday = nextWeekMonday(from);
+  if (dayIndex === 0) return addDays(monday, 6);
+  return addDays(monday, dayIndex - 1);
+}
+
+function weekdayIndexIn(text) {
+  const lower = String(text || '').toLowerCase();
+  return WEEKDAYS.findIndex((day) => new RegExp(`\\b${day}\\b`, 'i').test(lower));
+}
+
+function isShortDateOnlyReply(text) {
+  if (text.length > 80) return false;
+  if (text.split(/\s+/).filter(Boolean).length > 12) return false;
+  if (/\blast\b/i.test(text)) return false;
+  return Boolean(
+    /\b(next week|tomorrow|today|end of (the )?month|month end)\b/i.test(text) ||
+      weekdayIndexIn(text) >= 0 ||
+      /\b(20\d{2}-\d{2}-\d{2})\b/.test(text) ||
+      new RegExp(`\\b(\\d{1,2})(?:st|nd|rd|th)?\\s+(?:of\\s+)?(${MONTHS})\\b`, 'i').test(text) ||
+      new RegExp(`\\b(${MONTHS})\\s+(\\d{1,2})(?:st|nd|rd|th)?\\b`, 'i').test(text),
+  );
+}
+
 const MONTH_INDEX = {
   january: 0,
   february: 1,
@@ -106,10 +136,13 @@ export function splitEmailThread(raw) {
 
 export function parsePromiseFromReply(raw) {
   const text = String(raw || '').replace(/\s+/g, ' ').trim();
-  if (!text || PROMISE_NO.test(text) || !PROMISE_YES.test(text)) return null;
+  if (!text || PROMISE_NO.test(text)) return null;
+  if (!PROMISE_YES.test(text) && !isShortDateOnlyReply(text)) return null;
 
   const now = new Date();
   const lower = text.toLowerCase();
+  const mentionedWeekday = weekdayIndexIn(lower);
+  const saysNextWeek = /\bnext week\b/i.test(text);
 
   const iso = text.match(/\b(20\d{2}-\d{2}-\d{2})\b/);
   if (iso) {
@@ -140,9 +173,12 @@ export function parsePromiseFromReply(raw) {
     if (value) return { date: isoDay(upcoming(value)), dateInferred: false };
   }
 
+  if (saysNextWeek && mentionedWeekday >= 0) {
+    return { date: isoDay(weekdayInNextWeek(now, mentionedWeekday)), dateInferred: false };
+  }
   if (/\btomorrow\b/i.test(text)) return { date: isoDay(addDays(now, 1)), dateInferred: false };
   if (/\btoday\b/i.test(text)) return { date: isoDay(now), dateInferred: false };
-  if (/\bnext week\b/i.test(text)) return { date: isoDay(addDays(now, 7)), dateInferred: false };
+  if (saysNextWeek) return { date: isoDay(addDays(now, 7)), dateInferred: false };
   if (/\bend of (the )?month\b/i.test(text) || /\bmonth end\b/i.test(text)) {
     return { date: isoDay(lastDayOfMonth(now)), dateInferred: false };
   }
@@ -157,11 +193,9 @@ export function parsePromiseFromReply(raw) {
     }
   }
 
-  for (let i = 0; i < WEEKDAYS.length; i += 1) {
-    if (new RegExp(`\\b${WEEKDAYS[i]}\\b`, 'i').test(lower)) {
-      const date = now.getDay() === i ? startOfDay(now) : nextWeekday(now, i);
-      return { date: isoDay(date), dateInferred: false };
-    }
+  if (mentionedWeekday >= 0) {
+    const date = now.getDay() === mentionedWeekday ? startOfDay(now) : nextWeekday(now, mentionedWeekday);
+    return { date: isoDay(date), dateInferred: false };
   }
 
   return { date: isoDay(addDays(now, 7)), dateInferred: true };

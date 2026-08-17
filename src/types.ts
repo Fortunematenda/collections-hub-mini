@@ -279,7 +279,7 @@ export type Communication = {
   externalId?: string;
   messageId?: string;
   readAt?: string;
-  handledAs?: 'promise' | 'none' | 'skipped';
+  handledAs?: 'promise' | 'none' | 'skipped' | 'seeded';
 };
 
 export type Note = {

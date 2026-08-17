@@ -87,7 +87,7 @@ export type InboxSyncResult =
         externalId?: string;
         messageId?: string;
         readAt?: string;
-        handledAs?: 'promise' | 'none' | 'skipped';
+        handledAs?: 'promise' | 'none' | 'skipped' | 'seeded';
       }>;
       activities?: Array<{
         id: string;

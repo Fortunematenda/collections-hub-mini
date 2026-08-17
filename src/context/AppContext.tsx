@@ -1066,7 +1066,7 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
         (item) =>
           item.channel === 'Email' &&
           item.direction === 'Incoming' &&
-          !item.handledAs &&
+          (!item.handledAs || item.handledAs === 'none') &&
           !emailPromiseHandled.current.has(item.id),
       )
       .sort((a, b) => String(b.createdAt || '').localeCompare(String(a.createdAt || '')));

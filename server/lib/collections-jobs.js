@@ -29,7 +29,12 @@ export function applyEmailPromises(store) {
   let created = 0;
 
   const pending = communications
-    .filter((item) => item.channel === 'Email' && item.direction === 'Incoming' && !item.handledAs)
+    .filter(
+      (item) =>
+        item.channel === 'Email' &&
+        item.direction === 'Incoming' &&
+        (!item.handledAs || item.handledAs === 'none'),
+    )
     .sort((a, b) => String(b.createdAt || '').localeCompare(String(a.createdAt || '')));
 
   for (const comm of pending) {
@@ -150,7 +155,7 @@ export function seedHistoricalEmailPromises(store) {
   }
   const communications = (store.communications || []).map((item) =>
     item.channel === 'Email' && item.direction === 'Incoming' && !item.handledAs
-      ? { ...item, handledAs: 'none' }
+      ? { ...item, handledAs: 'seeded' }
       : item,
   );
   return {
