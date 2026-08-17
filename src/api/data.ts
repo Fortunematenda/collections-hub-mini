@@ -17,6 +17,13 @@ export type AppDataPayload = {
   activities: unknown[];
   integrations: unknown[];
   automationRules: unknown[];
+  assignmentRules?: unknown[];
+  responseRules?: unknown[];
+  classifiedResponses?: unknown[];
+  workTasks?: unknown[];
+  disputeCases?: unknown[];
+  teams?: unknown[];
+  documents?: unknown[];
   importMappings?: Record<string, Record<string, string>>;
   revision?: number;
 };

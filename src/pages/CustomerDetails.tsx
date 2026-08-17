@@ -4,6 +4,7 @@ import {
   Badge,
   Button,
   Card,
+  FileButton,
   Group,
   Menu,
   Select,
@@ -21,6 +22,7 @@ import {
   CalendarClock,
   Edit,
   ExternalLink,
+  FileText,
   Inbox,
   Mail,
   MapPin,
@@ -47,6 +49,8 @@ import {
   ScheduleFollowUpModal,
 } from '../modals/ActionModals';
 import { CustomerFormModal, MarkPaidModal, PromiseToPayModal, SendMessageModal } from '../modals/CoreModals';
+import { downloadDocument, uploadDocumentFile } from '../api/documents';
+import { ResponseActionModal } from '../modals/ResponseActionModal';
 import type { Communication, Equipment, FollowUp, Note, NoteType, Payment, PaymentPromise, RecoveryJob } from '../types';
 import {
   actorName,
@@ -56,6 +60,8 @@ import {
   daysOverdue,
   fullAddress,
   initials,
+  INTENT_BADGE_COLOR,
+  INTENT_LABELS,
   money,
   normalizeTab,
   recoveryColor,
@@ -130,6 +136,10 @@ export default function CustomerDetails() {
     loading,
     syncInbox,
     markCommunicationRead,
+    resumeAutomation,
+    companyDocuments,
+    generateCustomerStatement,
+    addDocument,
   } = useApp();
 
   const customer = customers.find((item) => item.id === customerId) || getCustomer(customerId || '');
@@ -149,6 +159,7 @@ export default function CustomerDetails() {
   const [completeJobId, setCompleteJobId] = useState<string | null>(null);
   const [noteFilter, setNoteFilter] = useState<string | null>('All');
   const [expandedComm, setExpandedComm] = useState<string | null>(null);
+  const [responseCommId, setResponseCommId] = useState<string | null>(searchParams.get('comm'));
   const [checkingInbox, setCheckingInbox] = useState(false);
   const [replyComm, setReplyComm] = useState<Communication | null>(null);
   const tab = normalizeTab(searchParams.get('tab'), CUSTOMER_TABS, 'overview');
@@ -275,9 +286,16 @@ export default function CustomerDetails() {
                 <span className={overdue > 0 ? 'customer-detail-overdue' : 'customer-detail-muted'}>
                   {overdue} days overdue
                 </span>
-                {customer.nextFollowUp && (
-                  <span className="customer-detail-muted">Next follow-up {safeDate(customer.nextFollowUp)}</span>
-                )}
+                {customer.lastResponseIntent ? (
+                  <Badge size="sm" variant="light" color={INTENT_BADGE_COLOR[customer.lastResponseIntent] || 'gray'}>
+                    {INTENT_LABELS[customer.lastResponseIntent] || customer.lastResponseIntent}
+                  </Badge>
+                ) : null}
+                {customer.automationPaused ? (
+                  <Badge size="sm" variant="light" color="orange">
+                    Automation paused{customer.automationPausedReason ? ` · ${customer.automationPausedReason}` : ''}
+                  </Badge>
+                ) : null}
               </div>
             </div>
           </div>
@@ -483,24 +501,74 @@ export default function CustomerDetails() {
             <Card className="card" radius="lg" p="lg">
               <div className="card-title">Next Action</div>
               <SimpleGrid cols={1} mt="md">
-                <Info label="Next follow-up" value={customer.nextFollowUp ? safeDate(customer.nextFollowUp) : 'Not scheduled'} />
-                <Info label="Assigned collector" value={customer.assignedCollector || '—'} />
-                <Info
-                  label="Recommended action"
-                  value={
-                    customer.status === 'Promise to Pay'
-                      ? 'Confirm promise on due date'
-                      : customer.status === 'Recovery Required'
-                        ? 'Schedule equipment recovery'
-                        : customer.status === 'Paid'
-                          ? 'No action required'
-                          : 'Contact customer regarding outstanding balance'
-                  }
-                />
+                <Info label="Next action" value={customer.nextAction || 'Contact customer regarding outstanding balance'} />
+                <Info label="Due date" value={customer.nextActionDue ? safeDate(customer.nextActionDue) : customer.nextFollowUp ? safeDate(customer.nextFollowUp) : 'Not scheduled'} />
+                <Info label="Assigned to" value={customer.nextActionAssignee || customer.assignedCollector || '—'} />
+                <Info label="Priority" value={customer.nextActionPriority || 'Medium'} />
                 {customer.promisedDate && (
                   <Info label="Active promise" value={`${money(customer.promisedAmount || customer.outstanding)} by ${safeDate(customer.promisedDate)}`} />
                 )}
+                {customer.automationPaused ? (
+                  <Button size="xs" variant="light" color="orange" onClick={() => resumeAutomation(customer.id)}>
+                    Resume automation
+                  </Button>
+                ) : null}
               </SimpleGrid>
+            </Card>
+
+            <Card className="card" radius="lg" p="lg" style={{ gridColumn: '1 / -1' }}>
+              <Group justify="space-between">
+                <div className="card-title">Documents</div>
+                <Group gap={6}>
+                  <FileButton
+                    accept="image/*,.pdf"
+                    onChange={(file) => {
+                      if (!file || !customer) return;
+                      void uploadDocumentFile({ customerId: customer.id, kind: 'pop', file }).then((doc) => addDocument(doc));
+                    }}
+                  >
+                    {(props) => (
+                      <Button {...props} size="xs" variant="light">
+                        Upload POP
+                      </Button>
+                    )}
+                  </FileButton>
+                  <Button size="xs" variant="light" leftSection={<FileText size={12} />} onClick={() => void generateCustomerStatement(customer.id)}>
+                    Generate statement
+                  </Button>
+                </Group>
+              </Group>
+              {companyDocuments(customer.id).length === 0 ? (
+                <EmptyState title="No stored files" description="Generate a statement or upload a proof-of-payment image. Files are kept on the server, not inside the workspace JSON." />
+              ) : (
+                <Table mt="md" striped highlightOnHover>
+                  <Table.Thead>
+                    <Table.Tr>
+                      <Table.Th>File</Table.Th>
+                      <Table.Th>Type</Table.Th>
+                      <Table.Th>Uploaded</Table.Th>
+                      <Table.Th />
+                    </Table.Tr>
+                  </Table.Thead>
+                  <Table.Tbody>
+                    {companyDocuments(customer.id).map((doc) => (
+                      <Table.Tr key={doc.id}>
+                        <Table.Td>
+                          <Text size="sm">{doc.filename}</Text>
+                          <Text size="xs" c="dimmed">{Math.round((doc.size || 0) / 1024)} KB · {doc.uploadedBy}</Text>
+                        </Table.Td>
+                        <Table.Td><Badge variant="light">{doc.kind}</Badge></Table.Td>
+                        <Table.Td>{safeDate(doc.createdAt)}</Table.Td>
+                        <Table.Td>
+                          <Button size="compact-xs" variant="subtle" onClick={() => void downloadDocument(doc)}>
+                            Download
+                          </Button>
+                        </Table.Td>
+                      </Table.Tr>
+                    ))}
+                  </Table.Tbody>
+                </Table>
+              )}
             </Card>
 
             <Card className="card" radius="lg" p="lg" style={{ gridColumn: '1 / -1' }}>
@@ -564,6 +632,7 @@ export default function CustomerDetails() {
                   onClick={() => {
                     markCommunicationRead(c.id);
                     setExpandedComm(expandedComm === c.id ? null : c.id);
+                    if (c.direction === 'Incoming') setResponseCommId(c.id);
                   }}
                 >
                   <Group justify="space-between" wrap="wrap">
@@ -577,6 +646,11 @@ export default function CustomerDetails() {
                       {unread ? (
                         <Badge size="xs" color="orange" variant="filled">
                           New
+                        </Badge>
+                      ) : null}
+                      {c.detectedIntent ? (
+                        <Badge size="xs" variant="light" color={INTENT_BADGE_COLOR[c.detectedIntent] || 'gray'}>
+                          {INTENT_LABELS[c.detectedIntent] || c.detectedIntent}
                         </Badge>
                       ) : null}
                     </Group>
@@ -1173,6 +1247,36 @@ export default function CustomerDetails() {
         onConfirm={() => {
           pendingDelete?.run();
           setPendingDelete(null);
+        }}
+      />
+      <ResponseActionModal
+        opened={Boolean(responseCommId)}
+        onClose={() => setResponseCommId(null)}
+        communication={communications.find((item) => item.id === responseCommId) || null}
+        customer={customer}
+        onCreatePromise={() => {
+          setResponseCommId(null);
+          openCreate('promise');
+        }}
+        onVerifyPayment={() => {
+          setResponseCommId(null);
+          openCreate('payment');
+        }}
+        onCreateDispute={() => {
+          setResponseCommId(null);
+          openCreate('note');
+        }}
+        onScheduleCallback={() => {
+          setResponseCommId(null);
+          openCreate('followup');
+        }}
+        onCreateRecovery={() => {
+          setResponseCommId(null);
+          openCreate('recovery');
+        }}
+        onAddNote={() => {
+          setResponseCommId(null);
+          openCreate('note');
         }}
       />
     </>

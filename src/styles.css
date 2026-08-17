@@ -1900,3 +1900,37 @@ select {
   font-size: 12.5px;
   line-height: 1.45;
 }
+
+.work-section {
+  margin-top: 18px;
+}
+
+.work-card {
+  border: 1px solid #e5e9f1;
+  border-radius: 14px;
+  padding: 14px;
+  background: #fff;
+}
+
+.work-card-top {
+  display: flex;
+  justify-content: space-between;
+  gap: 10px;
+  align-items: flex-start;
+}
+
+.work-card-meta,
+.work-card-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  margin-top: 8px;
+  font-size: 11px;
+  color: #6b7280;
+}
+
+@media (max-width: 48em) {
+  .work-card-top {
+    flex-direction: column;
+  }
+}

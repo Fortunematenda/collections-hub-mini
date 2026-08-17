@@ -134,6 +134,39 @@ export default function Settings() {
         </Card>
 
         <Card className="card" radius="lg" p="lg">
+          <div className="card-title">Payment details</div>
+          <Stack mt="lg">
+            <TextInput
+              label="Bank name"
+              value={draft.bankName || ''}
+              onChange={(e) => setDraft({ ...draft, bankName: e.currentTarget.value })}
+            />
+            <TextInput
+              label="Account name"
+              value={draft.bankAccountName || ''}
+              onChange={(e) => setDraft({ ...draft, bankAccountName: e.currentTarget.value })}
+            />
+            <TextInput
+              label="Account number"
+              value={draft.bankAccountNumber || ''}
+              onChange={(e) => setDraft({ ...draft, bankAccountNumber: e.currentTarget.value })}
+            />
+            <TextInput
+              label="Branch code"
+              value={draft.bankBranchCode || ''}
+              onChange={(e) => setDraft({ ...draft, bankBranchCode: e.currentTarget.value })}
+            />
+            <Textarea
+              label="Payment instructions"
+              minRows={3}
+              placeholder="Use this account number as the payment reference…"
+              value={draft.paymentInstructions || ''}
+              onChange={(e) => setDraft({ ...draft, paymentInstructions: e.currentTarget.value })}
+            />
+          </Stack>
+        </Card>
+
+        <Card className="card" radius="lg" p="lg">
           <div className="card-title">Address</div>
           <Stack mt="lg">
             <TextInput

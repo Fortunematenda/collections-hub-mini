@@ -3,6 +3,7 @@ import {
   Alert,
   Button,
   Checkbox,
+  FileInput,
   Group,
   Modal,
   Select,
@@ -14,6 +15,7 @@ import {
 } from '@mantine/core';
 import type { Communication, Company, CompanyStatus, Customer, Equipment, Payment, PaymentPromise, PreferredContact, AccountStatus } from '../types';
 import { useApp } from '../context/AppContext';
+import { uploadDocumentFile } from '../api/documents';
 import {
   amountOwed,
   applyPaymentToBalance,
@@ -109,6 +111,11 @@ export function CompanyFormModal({
         followUpIntervalDays: draft.followUpIntervalDays || 3,
         defaultRecoveryBehaviour: draft.defaultRecoveryBehaviour,
         collectionRules: draft.collectionRules,
+        bankName: draft.bankName,
+        bankAccountName: draft.bankAccountName,
+        bankAccountNumber: draft.bankAccountNumber,
+        bankBranchCode: draft.bankBranchCode,
+        paymentInstructions: draft.paymentInstructions,
       };
       if (editing && company?.id) updateCompany({ ...company, ...payload, id: company.id });
       else addCompany(payload);
@@ -142,6 +149,13 @@ export function CompanyFormModal({
           <TextInput label="Country" value={draft.country || ''} onChange={(e) => set('country', e.currentTarget.value)} />
           <TextInput label="Company colour / accent" placeholder="#6c63ff" value={draft.accentColor || ''} onChange={(e) => set('accentColor', e.currentTarget.value)} />
           <TextInput label="Logo URL" placeholder="https://..." value={draft.logoUrl || ''} onChange={(e) => set('logoUrl', e.currentTarget.value)} />
+        </SimpleGrid>
+        <Textarea label="Payment instructions" minRows={3} value={draft.paymentInstructions || ''} onChange={(e) => set('paymentInstructions', e.currentTarget.value)} placeholder="Banking details sent when a customer asks how to pay"/>
+        <SimpleGrid cols={{ base: 1, sm: 2 }}>
+          <TextInput label="Bank name" value={draft.bankName || ''} onChange={(e) => set('bankName', e.currentTarget.value)} />
+          <TextInput label="Account name" value={draft.bankAccountName || ''} onChange={(e) => set('bankAccountName', e.currentTarget.value)} />
+          <TextInput label="Account number" value={draft.bankAccountNumber || ''} onChange={(e) => set('bankAccountNumber', e.currentTarget.value)} />
+          <TextInput label="Branch code" value={draft.bankBranchCode || ''} onChange={(e) => set('bankBranchCode', e.currentTarget.value)} />
         </SimpleGrid>
         <Textarea label="Notes" minRows={3} value={draft.notes || ''} onChange={(e) => set('notes', e.currentTarget.value)} />
         <div className="modal-sticky-actions">
@@ -397,13 +411,14 @@ export function MarkPaidModal({
   customer: Customer | null;
   existing?: Payment | null;
 }) {
-  const { recordPayment, updatePayment } = useApp();
+  const { recordPayment, updatePayment, addDocument } = useApp();
   const [amount, setAmount] = useState(0);
   const [paymentDate, setPaymentDate] = useState(todayIso());
   const [reference, setReference] = useState('');
   const [notes, setNotes] = useState('');
   const [clearAccount, setClearAccount] = useState(false);
   const [saving, setSaving] = useState(false);
+  const [popFile, setPopFile] = useState<File | null>(null);
 
   useEffect(() => {
     if (opened && customer) {
@@ -412,6 +427,7 @@ export function MarkPaidModal({
       setReference(existing?.reference || '');
       setNotes(existing?.notes || '');
       setClearAccount(existing ? Boolean(existing.clearedAccount) : false);
+      setPopFile(null);
     }
   }, [opened, customer, existing]);
 
@@ -433,6 +449,14 @@ export function MarkPaidModal({
         <TextInput label="Payment date" type="date" value={paymentDate} onChange={(e) => setPaymentDate(e.currentTarget.value)} />
         <TextInput label="Reference" value={reference} onChange={(e) => setReference(e.currentTarget.value)} />
         <Textarea label="Notes" value={notes} onChange={(e) => setNotes(e.currentTarget.value)} />
+        <FileInput
+          label="Proof of payment"
+          placeholder="Optional image or PDF"
+          accept="image/*,.pdf"
+          value={popFile}
+          onChange={(value) => setPopFile(Array.isArray(value) ? value[0] || null : value)}
+          clearable
+        />
         <Checkbox label="Mark account as fully cleared (set balance to R 0)" checked={clearAccount} onChange={(e) => setClearAccount(e.currentTarget.checked)} />
         <Text size="sm">
           Balance after this payment: <strong>{money(previewBalance)}</strong>
@@ -444,21 +468,30 @@ export function MarkPaidModal({
           <Button
             loading={saving}
             onClick={() => {
-              setSaving(true);
-              if (existing) {
-                updatePayment({
-                  ...existing,
-                  amount,
-                  paymentDate,
-                  reference,
-                  notes,
-                  clearedAccount: clearAccount,
-                });
-              } else {
-                recordPayment({ customerId: customer.id, amount, paymentDate, reference, notes, clearAccount });
-              }
-              setSaving(false);
-              onClose();
+              void (async () => {
+                setSaving(true);
+                try {
+                  if (existing) {
+                    updatePayment({
+                      ...existing,
+                      amount,
+                      paymentDate,
+                      reference,
+                      notes,
+                      clearedAccount: clearAccount,
+                    });
+                  } else {
+                    recordPayment({ customerId: customer.id, amount, paymentDate, reference, notes, clearAccount });
+                  }
+                  if (popFile) {
+                    const doc = await uploadDocumentFile({ customerId: customer.id, kind: 'pop', file: popFile });
+                    addDocument(doc);
+                  }
+                  onClose();
+                } finally {
+                  setSaving(false);
+                }
+              })();
             }}
           >
             {existing ? 'Save changes' : 'Record Payment'}

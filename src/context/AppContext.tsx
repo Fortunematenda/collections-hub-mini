@@ -39,6 +39,13 @@ import type {
   RecoveryStatus,
   Integration,
   AutomationRule,
+  AssignmentRule,
+  ResponseRule,
+  ClassifiedResponse,
+  WorkTask,
+  DisputeCase,
+  Team,
+  CustomerDocument,
 } from '../types';
 import {
   actorName,
@@ -51,15 +58,14 @@ import {
   completeMapping,
   findColumn,
   hasOutstandingBalance,
+  INTENT_LABELS,
   isPaidOrZeroBalance,
   money,
   normalize,
   nowIso,
-  parsePromiseFromReply,
   parseSignedAmount,
   preferDetectedMapping,
   safeDate,
-  splitEmailThread,
   todayIso,
   uid,
 } from '../utils';
@@ -68,6 +74,11 @@ import { fetchAppData, saveAppData } from '../api/data';
 import { useAuth } from './AuthContext';
 import { normalizeAccountKey } from '../../shared/account-key.js';
 import { parseImportDate } from '../../shared/import-date.js';
+import { applyClassifiedResponse, applyInboundResponsesAsync, defaultAssignmentRules, defaultResponseRules } from '../../shared/response-engine.js';
+import { classifyResponse } from '../../shared/response-classifier.js';
+import { defaultTeams } from '../../shared/teams.js';
+import { classifyViaApi } from '../api/classify';
+import { generatePaymentDetailsDocument, generateStatementDocument } from '../api/documents';
 import { sendMailViaApi, syncInboxViaApi } from '../api/mailer';
 import { defaultEmailTemplates, isLegacyCollectionBody } from '../data/emailTemplates';
 import { sendWhatsAppViaApi } from '../api/whatsapp';
@@ -92,6 +103,13 @@ type PersistedAppData = {
   activities: Activity[];
   integrations: Integration[];
   automationRules: AutomationRule[];
+  assignmentRules?: AssignmentRule[];
+  responseRules?: ResponseRule[];
+  classifiedResponses?: ClassifiedResponse[];
+  workTasks?: WorkTask[];
+  disputeCases?: DisputeCase[];
+  teams?: Team[];
+  documents?: CustomerDocument[];
   importMappings?: Record<string, Mapping>;
   revision?: number;
 };
@@ -146,10 +164,29 @@ type AppContextValue = {
   activities: Activity[];
   integrations: Integration[];
   automationRules: AutomationRule[];
+  assignmentRules: AssignmentRule[];
+  responseRules: ResponseRule[];
+  classifiedResponses: ClassifiedResponse[];
+  workTasks: WorkTask[];
+  disputeCases: DisputeCase[];
+  teams: Team[];
+  documents: CustomerDocument[];
   saveIntegration: (item: Integration) => void;
   removeIntegration: (id: string) => void;
   saveAutomationRule: (item: AutomationRule) => void;
   removeAutomationRule: (id: string) => void;
+  saveAssignmentRule: (item: AssignmentRule) => void;
+  removeAssignmentRule: (id: string) => void;
+  saveResponseRule: (item: ResponseRule) => void;
+  removeResponseRule: (id: string) => void;
+  saveTeam: (item: Team) => void;
+  removeTeam: (id: string) => void;
+  addDocument: (item: CustomerDocument) => void;
+  generateCustomerStatement: (customerId: string) => Promise<CustomerDocument | null>;
+  overrideClassification: (responseId: string, intent: string, reason: string) => void;
+  resumeAutomation: (customerId: string) => void;
+  completeWorkTask: (id: string, status?: string) => void;
+  classifyManualResponse: (input: { customerId: string; message: string; channel?: CommChannel }) => void;
   search: string;
   setSearch: (v: string) => void;
   statusFilter: string | null;
@@ -251,6 +288,7 @@ type AppContextValue = {
   companyNotes: (customerId?: string) => Note[];
   companyFollowUps: (customerId?: string) => FollowUp[];
   companyActivities: (customerId?: string) => Activity[];
+  companyDocuments: (customerId?: string) => CustomerDocument[];
   toastSuccess: (message: string) => void;
   toastError: (message: string) => void;
   addActivity: (partial: Omit<Activity, 'id' | 'createdAt' | 'user'> & { user?: string; createdAt?: string }) => void;
@@ -296,6 +334,13 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
   const [activities, setActivities] = useState<Activity[]>(() => persisted?.activities ?? initialActivities);
   const [integrations, setIntegrations] = useState<Integration[]>(() => persisted?.integrations ?? []);
   const [automationRules, setAutomationRules] = useState<AutomationRule[]>(() => persisted?.automationRules ?? []);
+  const [assignmentRules, setAssignmentRules] = useState<AssignmentRule[]>(() => persisted?.assignmentRules ?? []);
+  const [responseRules, setResponseRules] = useState<ResponseRule[]>(() => persisted?.responseRules ?? []);
+  const [classifiedResponses, setClassifiedResponses] = useState<ClassifiedResponse[]>(() => persisted?.classifiedResponses ?? []);
+  const [workTasks, setWorkTasks] = useState<WorkTask[]>(() => persisted?.workTasks ?? []);
+  const [disputeCases, setDisputeCases] = useState<DisputeCase[]>(() => persisted?.disputeCases ?? []);
+  const [teams, setTeams] = useState<Team[]>(() => persisted?.teams ?? []);
+  const [documents, setDocuments] = useState<CustomerDocument[]>(() => persisted?.documents ?? []);
   const [importMappings, setImportMappings] = useState<Record<string, Mapping>>(
     () => persisted?.importMappings ?? {},
   );
@@ -310,7 +355,6 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
   const [loading, setLoading] = useState(true);
   const [hydrated, setHydrated] = useState(false);
   const skipServerSave = useRef(true);
-  const emailPromiseHandled = useRef(new Set<string>());
 
   function applyPersistedData(data: PersistedAppData) {
     const list = Array.isArray(data.companies) ? data.companies : [];
@@ -347,6 +391,13 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
     setActivities(Array.isArray(data.activities) ? data.activities : []);
     setIntegrations(Array.isArray(data.integrations) ? data.integrations : []);
     setAutomationRules(Array.isArray(data.automationRules) ? data.automationRules : []);
+    setAssignmentRules(Array.isArray(data.assignmentRules) ? data.assignmentRules : []);
+    setResponseRules(Array.isArray(data.responseRules) ? data.responseRules : []);
+    setClassifiedResponses(Array.isArray(data.classifiedResponses) ? data.classifiedResponses : []);
+    setWorkTasks(Array.isArray(data.workTasks) ? data.workTasks : []);
+    setDisputeCases(Array.isArray(data.disputeCases) ? data.disputeCases : []);
+    setTeams(Array.isArray(data.teams) ? data.teams : []);
+    setDocuments(Array.isArray(data.documents) ? data.documents : []);
     setImportMappings(data.importMappings && typeof data.importMappings === 'object' ? data.importMappings : {});
     const nextRevision = Number(data.revision || 0);
     revisionRef.current = nextRevision;
@@ -395,6 +446,13 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
             activities: [],
             integrations: [],
             automationRules: [],
+            assignmentRules: [],
+            responseRules: [],
+            classifiedResponses: [],
+            workTasks: [],
+            disputeCases: [],
+            teams: [],
+            documents: [],
             importMappings: {},
             revision: 0,
           });
@@ -429,6 +487,13 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
       activities,
       integrations,
       automationRules,
+      assignmentRules,
+      responseRules,
+      classifiedResponses,
+      workTasks,
+      disputeCases,
+      teams,
+      documents,
       importMappings,
       revision: revisionRef.current,
     };
@@ -500,6 +565,13 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
     activities,
     integrations,
     automationRules,
+    assignmentRules,
+    responseRules,
+    classifiedResponses,
+    workTasks,
+    disputeCases,
+    teams,
+    documents,
     importMappings,
     hydrated,
     canWriteData,
@@ -528,6 +600,13 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
       if (next.some((t) => t.companyId === companyId && t.channel === 'Email')) return next;
       return [...defaults, ...next];
     });
+  }, [hydrated, companyId]);
+
+  useEffect(() => {
+    if (!hydrated || !companyId) return;
+    setAssignmentRules((prev) => (prev.some((item) => item.companyId === companyId) ? prev : [...(defaultAssignmentRules(companyId) as AssignmentRule[]), ...prev]));
+    setResponseRules((prev) => (prev.some((item) => item.companyId === companyId) ? prev : [...defaultResponseRules(companyId), ...prev]));
+    setTeams((prev) => (prev.some((item) => item.companyId === companyId) ? prev : [...defaultTeams(companyId), ...prev]));
   }, [hydrated, companyId]);
 
   const toastSuccess = useCallback((message: string) => {
@@ -707,6 +786,9 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
     };
     setCompanies((prev) => [...prev, created]);
     setCompanyId(created.id);
+    setAssignmentRules((prev) => [...(defaultAssignmentRules(created.id) as AssignmentRule[]), ...prev]);
+    setResponseRules((prev) => [...defaultResponseRules(created.id), ...prev]);
+    setTeams((prev) => [...defaultTeams(created.id), ...prev]);
     addActivity({ companyId: created.id, action: 'Company created', description: `${created.name} portfolio created.` });
     toastSuccess('Company saved successfully.');
     return created;
@@ -1017,6 +1099,13 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
       ...prev,
     ]);
     toastSuccess(`Payment recorded. Balance is now ${money(nextOutstanding)}.`);
+    setWorkTasks((prev) =>
+      prev.map((item) =>
+        item.customerId === customer.id && (item.queue === 'Payment Verification' || item.verificationStatus === 'Awaiting Verification')
+          ? { ...item, status: 'Verified', verificationStatus: 'Verified', completedAt: nowIso() }
+          : item,
+      ),
+    );
   }
 
   function updatePayment(payment: Payment) {
@@ -1185,52 +1274,80 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
 
   useEffect(() => {
     if (!hydrated) return;
-    const pending = communications
-      .filter(
-        (item) =>
-          item.channel === 'Email' &&
-          item.direction === 'Incoming' &&
-          (!item.handledAs || item.handledAs === 'none') &&
-          !emailPromiseHandled.current.has(item.id),
-      )
-      .sort((a, b) => String(b.createdAt || '').localeCompare(String(a.createdAt || '')));
+    const pending = communications.filter(
+      (item) =>
+        item.direction === 'Incoming' &&
+        ['Email', 'WhatsApp', 'SMS', 'Phone'].includes(item.channel) &&
+        (!item.handledAs || item.handledAs === 'none'),
+    );
     if (!pending.length) return;
-
-    const marks = new Map<string, NonNullable<Communication['handledAs']>>();
-    const queuedCustomers = new Set<string>();
-
-    for (const comm of pending) {
-      emailPromiseHandled.current.add(comm.id);
-      const customer = customers.find((item) => item.id === comm.customerId);
-      const body = splitEmailThread(comm.message).body || '';
-      const parsed = parsePromiseFromReply(body);
-
-      if (!parsed || !customer || isPaidOrZeroBalance(customer) || customer.status === 'Cancelled') {
-        marks.set(comm.id, parsed ? 'skipped' : 'none');
-        continue;
+    let cancelled = false;
+    void (async () => {
+      const result = await applyInboundResponsesAsync(
+        {
+          customers,
+          promises,
+          followUps,
+          activities,
+          communications,
+          workTasks,
+          classifiedResponses,
+          disputeCases,
+          recoveries,
+          assignmentRules,
+          responseRules,
+          equipment,
+          teams,
+        },
+        {
+          teams,
+          classify: async (raw: string, opts?: { hasAttachment?: boolean }) => {
+            const rule = classifyResponse(raw, opts);
+            if (rule.autoApply && rule.confidence >= 0.85) return rule;
+            try {
+              const ai = await classifyViaApi(raw, opts);
+              return ai || rule;
+            } catch {
+              return rule;
+            }
+          },
+        },
+      );
+      if (cancelled) return;
+      setCustomers(result.store.customers);
+      setPromises(result.store.promises);
+      setFollowUps(result.store.followUps);
+      setActivities(result.store.activities);
+      setCommunications(result.store.communications);
+      setWorkTasks(result.store.workTasks || []);
+      setClassifiedResponses(result.store.classifiedResponses || []);
+      setDisputeCases(result.store.disputeCases || []);
+      setRecoveries(result.store.recoveries);
+      if (result.store.assignmentRules) setAssignmentRules(result.store.assignmentRules);
+      for (const request of result.documentRequests || []) {
+        try {
+          const doc =
+            request.kind === 'statement'
+              ? await generateStatementDocument(request.customerId)
+              : await generatePaymentDetailsDocument(request.customerId);
+          if (doc && !cancelled) {
+            setDocuments((prev) => (prev.some((item) => item.id === doc.id) ? prev : [doc, ...prev]));
+          }
+        } catch {
+          // Server job can generate the file if this browser call fails.
+        }
       }
-
-      marks.set(comm.id, 'promise');
-      if (queuedCustomers.has(customer.id)) continue;
-      queuedCustomers.add(customer.id);
-
-      createPromise({
-        customerId: customer.id,
-        amount: amountOwed(customer.outstanding),
-        promiseDate: parsed.date,
-        customerComment: body.slice(0, 500),
-        internalNote: parsed.dateInferred
-          ? `Auto from email ${comm.id} — no date given, used ${safeDate(parsed.date)}.`
-          : `Auto from email ${comm.id}.`,
-        silent: true,
-      });
-      notifySuccess(`${customer.name} marked Promise to Pay for ${safeDate(parsed.date)}.`, {
-        title: 'Promise to Pay',
-      });
-    }
-
-    setCommunications((prev) => prev.map((item) => (marks.has(item.id) ? { ...item, handledAs: marks.get(item.id) } : item)));
-  }, [hydrated, communications, customers, promises]);
+      if (result.classified) {
+        notifySuccess(
+          result.classified === 1 ? 'Classified 1 customer response.' : `Classified ${result.classified} customer responses.`,
+          { title: 'Response classification' },
+        );
+      }
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, [hydrated, communications]);
 
   function updatePromiseStatus(id: string, status: PromiseStatus, outcome?: string) {
     const promise = promises.find((p) => p.id === id);
@@ -1988,6 +2105,11 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
       'Contacted',
       'Promise to Pay',
       'Payment Pending',
+      'Payment Verification',
+      'Extension Requested',
+      'Dispute',
+      'Cancellation Requested',
+      'Payment Arrangement Review',
       'Paid',
       'Unresponsive',
       'Escalated',
@@ -2000,7 +2122,9 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
     const n = normalize(raw);
     if (n.includes('overdue') || n === 'outstanding' || n === 'unpaid' || n === 'arrears') return 'New Overdue';
     if (n.includes('follow')) return 'Follow-up Due';
-    if (n.includes('promise')) return 'Promise to Pay';
+    if (n.includes('dispute')) return 'Dispute';
+    if (n.includes('verif')) return 'Payment Verification';
+    if (n.includes('extension')) return 'Extension Requested';
     if (n.includes('recover')) return 'Recovery Required';
     if (n.includes('cancel')) return 'Service Cancelled';
     if (n === 'paid' || n === 'cleared' || n === 'credit') return 'Paid';
@@ -2286,6 +2410,135 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
     toastSuccess(`Deleted ${batch.file}.`);
   }
 
+  function commitClassification(patch: ReturnType<typeof applyClassifiedResponse>) {
+    if (!patch || patch.skipped) return;
+    setCustomers((prev) => prev.map((item) => (item.id === patch.customer.id ? patch.customer : item)));
+    if (patch.promise) {
+      setPromises((prev) => {
+        const existing = prev.findIndex((item) => item.customerId === patch.customer.id && item.status === 'Pending');
+        if (existing >= 0) {
+          return prev.map((item, index) => (index === existing ? { ...item, ...patch.promise, id: item.id } : item)) as PaymentPromise[];
+        }
+        return [patch.promise as PaymentPromise, ...prev];
+      });
+    }
+    if (patch.followUp) setFollowUps((prev) => [patch.followUp!, ...prev]);
+    if (patch.task) setWorkTasks((prev) => [patch.task!, ...prev]);
+    if (patch.classifiedResponse) setClassifiedResponses((prev) => [patch.classifiedResponse!, ...prev]);
+    if (patch.dispute) setDisputeCases((prev) => [patch.dispute as DisputeCase, ...prev]);
+    if (patch.recovery) setRecoveries((prev) => [patch.recovery as RecoveryJob, ...prev]);
+    if (patch.activities?.length) setActivities((prev) => [...patch.activities, ...prev]);
+  }
+
+  function overrideClassification(responseId: string, intent: string, reason: string) {
+    const current = classifiedResponses.find((item) => item.id === responseId);
+    if (!current) return;
+    const customer = customers.find((item) => item.id === current.customerId);
+    if (!customer) return;
+    const communication = communications.find((item) => item.id === current.communicationId);
+    const classification = {
+      intent,
+      detectedIntent: intent,
+      confidence: 1,
+      entities: current.detectedEntities || {},
+      source: 'Manual' as const,
+      needsReview: false,
+      autoApply: true,
+      dateRequired: false,
+      claimedCompleted: intent === 'PAYMENT_CLAIMED' || intent === 'PROOF_OF_PAYMENT_RECEIVED',
+    };
+    const assignmentRule = assignmentRules.find((item) => item.companyId === customer.companyId && item.active && item.triggerIntent === intent);
+    const responseRule = responseRules.find((item) => item.companyId === customer.companyId && item.active && item.intent === intent);
+    const patch = applyClassifiedResponse({
+      customer,
+      classification,
+      communication,
+      actor: actorName(),
+      assignmentRule,
+      responseRule,
+      companyOwnedEquipment: equipment.filter((item) => item.customerId === customer.id),
+      teams,
+    });
+    commitClassification(patch);
+    setClassifiedResponses((prev) =>
+      prev.map((item) =>
+        item.id === responseId
+          ? {
+              ...item,
+              originalIntent: item.originalIntent || item.detectedIntent,
+              detectedIntent: intent,
+              appliedIntent: intent,
+              classificationSource: 'Manual',
+              overrideReason: reason,
+              reviewedBy: actorName(),
+              reviewedAt: nowIso(),
+              needsReview: false,
+            }
+          : item,
+      ),
+    );
+    addActivity({
+      companyId: customer.companyId,
+      customerId: customer.id,
+      action: 'Classification overridden',
+      description: `Response classification changed from ${INTENT_LABELS[current.detectedIntent] || current.detectedIntent} to ${INTENT_LABELS[intent] || intent} by ${actorName()}. Reason: ${reason}`,
+    });
+    toastSuccess('Classification updated.');
+  }
+
+  function resumeAutomation(customerId: string) {
+    const customer = customers.find((item) => item.id === customerId);
+    if (!customer) return;
+    setCustomers((prev) =>
+      prev.map((item) =>
+        item.id === customerId
+          ? { ...item, automationPaused: false, automationPausedReason: undefined, automationPausedUntil: undefined }
+          : item,
+      ),
+    );
+    addActivity({
+      companyId: customer.companyId,
+      customerId,
+      action: 'Automation resumed',
+      description: `${actorName()} resumed automated reminders.`,
+    });
+    toastSuccess('Automation resumed.');
+  }
+
+  function completeWorkTask(id: string, status = 'Completed') {
+    setWorkTasks((prev) => prev.map((item) => (item.id === id ? { ...item, status, completedAt: nowIso() } : item)));
+    toastSuccess('Task updated.');
+  }
+
+  async function generateCustomerStatement(customerId: string) {
+    try {
+      const doc = await generateStatementDocument(customerId);
+      setDocuments((prev) => (prev.some((item) => item.id === doc.id) ? prev : [doc, ...prev]));
+      toastSuccess('Statement saved.');
+      return doc;
+    } catch (error) {
+      toastError(error instanceof Error ? error.message : 'Unable to generate statement.');
+      return null;
+    }
+  }
+
+  function classifyManualResponse(input: { customerId: string; message: string; channel?: CommChannel }) {
+    const customer = customers.find((item) => item.id === input.customerId);
+    if (!customer) return;
+    const comm: Communication = {
+      id: uid('cm'),
+      companyId: customer.companyId,
+      customerId: customer.id,
+      channel: input.channel || 'Internal note',
+      direction: 'Incoming',
+      message: input.message,
+      status: 'Logged',
+      createdAt: nowIso(),
+      createdBy: actorName(),
+    };
+    setCommunications((prev) => [comm, ...prev]);
+  }
+
   const valueCtx: AppContextValue = {
     companies,
     companyId,
@@ -2316,6 +2569,13 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
     activities,
     integrations,
     automationRules,
+    assignmentRules,
+    responseRules,
+    classifiedResponses,
+    workTasks,
+    disputeCases,
+    teams,
+    documents,
     saveIntegration: (item) => {
       setIntegrations((prev) => prev.some((x) => x.id === item.id) ? prev.map((x) => x.id === item.id ? item : x) : [item, ...prev]);
       toastSuccess(`${item.provider} connection saved.`);
@@ -2326,6 +2586,27 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
       toastSuccess('Automation rule saved.');
     },
     removeAutomationRule: (id) => setAutomationRules((prev) => prev.filter((x) => x.id !== id)),
+    saveAssignmentRule: (item) => {
+      setAssignmentRules((prev) => prev.some((x) => x.id === item.id) ? prev.map((x) => x.id === item.id ? item : x) : [item, ...prev]);
+      toastSuccess('Assignment rule saved.');
+    },
+    removeAssignmentRule: (id) => setAssignmentRules((prev) => prev.filter((x) => x.id !== id)),
+    saveResponseRule: (item) => {
+      setResponseRules((prev) => prev.some((x) => x.id === item.id) ? prev.map((x) => x.id === item.id ? item : x) : [item, ...prev]);
+      toastSuccess('Response rule saved.');
+    },
+    removeResponseRule: (id) => setResponseRules((prev) => prev.filter((x) => x.id !== id)),
+    saveTeam: (item) => {
+      setTeams((prev) => (prev.some((x) => x.id === item.id) ? prev.map((x) => (x.id === item.id ? item : x)) : [item, ...prev]));
+      toastSuccess('Team saved.');
+    },
+    removeTeam: (id) => setTeams((prev) => prev.filter((x) => x.id !== id)),
+    addDocument: (item) => setDocuments((prev) => (prev.some((x) => x.id === item.id) ? prev : [item, ...prev])),
+    generateCustomerStatement,
+    overrideClassification,
+    resumeAutomation,
+    completeWorkTask,
+    classifyManualResponse,
     search,
     setSearch,
     statusFilter,
@@ -2397,6 +2678,8 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
       followUps.filter((f) => f.companyId === companyId && (!customerId || f.customerId === customerId)),
     companyActivities: (customerId) =>
       activities.filter((a) => a.companyId === companyId && (!customerId || a.customerId === customerId)),
+    companyDocuments: (customerId) =>
+      documents.filter((item) => item.companyId === companyId && (!customerId || item.customerId === customerId)),
     toastSuccess,
     toastError,
     addActivity,

@@ -20,6 +20,7 @@ import RolesPermissions from './pages/RolesPermissions';
 import UsersPage from './pages/Users';
 import Integrations from './pages/Integrations';
 import Automations from './pages/Automations';
+import MyWork from './pages/MyWork';
 
 export default function App() {
   return (
@@ -52,6 +53,7 @@ export default function App() {
                 <Route path="templates" element={<Templates />} />
               </Route>
               <Route path="communications" element={<Communications />} />
+              <Route path="my-work" element={<MyWork />} />
               <Route element={<ProtectedRoute permission="settings.manage" />}>
                 <Route path="integrations" element={<Integrations />} />
               </Route>

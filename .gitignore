@@ -6,7 +6,9 @@ dist
 **/.env
 server/.env
 server/data/*.json
+server/data/uploads/*
 !server/data/.gitkeep
+!server/data/uploads/.gitkeep
 *.log
 .DS_Store
 *.tsbuildinfo

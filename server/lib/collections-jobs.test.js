@@ -2,8 +2,8 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { applyEmailPromises, breakOverduePromises, runCollectionsJobs } from './collections-jobs.js';
 
-test('first run seeds historical mail and does not create promises', () => {
-  const result = runCollectionsJobs({
+test('first run seeds historical mail and does not create promises', async () => {
+  const result = await runCollectionsJobs({
     promiseEmailSeeded: false,
     customers: [
       {

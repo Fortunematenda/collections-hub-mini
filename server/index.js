@@ -22,6 +22,9 @@ import { toWhatsAppAddress as formatWhatsAppAddress } from '../shared/phone.js';
 import { checkRateLimit, recordFailure, recordSuccess } from './lib/rate-limit.js';
 import { runCollectionsJobs } from './lib/collections-jobs.js';
 import { mergeById, preferCustomer, preferPromise } from './lib/store-merge.js';
+import { classifyBest, classifierConfigured, classifierModel } from './lib/ai-classifier.js';
+import { createPaymentDetailsDocument, createStatementDocument, createUploadedDocument, readDocumentBuffer } from './lib/documents.js';
+import { classifyResponse } from '../shared/response-classifier.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 dotenv.config({ path: path.join(__dirname, '.env') });
@@ -404,6 +407,8 @@ app.get('/api/health', (_req, res) => {
     imapHost: imap.host || null,
     twilioFrom: twilioConfigured() ? twilioConfig.from : null,
     database: isUsingDatabase() ? 'postgres' : 'file-fallback',
+    classifier: classifierConfigured() ? 'openai' : 'rules',
+    classifierModel: classifierConfigured() ? classifierModel() : null,
   });
 });
 
@@ -415,6 +420,94 @@ app.get('/api/data', authRequired, requirePermission('companies.view', 'customer
     const message = error instanceof Error ? error.message : 'Unable to load app data.';
     return res.status(500).json({ ok: false, error: message });
   }
+});
+
+app.post('/api/classify', authRequired, requirePermission('customers.view', 'collections.manage', 'communications.send'), async (req, res) => {
+  const message = String(req.body?.message || '');
+  const hasAttachment = Boolean(req.body?.hasAttachment);
+  try {
+    const classification = await classifyBest(message, { hasAttachment });
+    return res.json({ ok: true, classification, configured: classifierConfigured() });
+  } catch {
+    return res.json({ ok: true, classification: classifyResponse(message, { hasAttachment }), configured: false });
+  }
+});
+
+app.post('/api/documents', authRequired, requirePermission('customers.manage', 'collections.manage'), async (req, res) => {
+  try {
+    const store = await readAppStore();
+    const customer = (store.customers || []).find((item) => item.id === req.body?.customerId);
+    if (!customer) return res.status(404).json({ ok: false, error: 'Customer not found.' });
+    const buffer = Buffer.from(String(req.body?.dataBase64 || ''), 'base64');
+    const document = createUploadedDocument({
+      companyId: customer.companyId,
+      customerId: customer.id,
+      kind: req.body?.kind || 'other',
+      filename: req.body?.filename,
+      mime: req.body?.mime,
+      buffer,
+      uploadedBy: req.user?.name || 'User',
+      communicationId: req.body?.communicationId,
+      taskId: req.body?.taskId,
+    });
+    const saved = await writeAppStore({
+      ...store,
+      documents: [document, ...(store.documents || [])],
+      revision: Number(store.revision || 0),
+    });
+    return res.json({ ok: true, document, revision: saved.revision });
+  } catch (error) {
+    const message = error instanceof Error ? error.message : 'Unable to store file.';
+    return res.status(400).json({ ok: false, error: message });
+  }
+});
+
+app.post('/api/documents/statement', authRequired, requirePermission('customers.manage', 'collections.manage', 'communications.send'), async (req, res) => {
+  try {
+    const store = await readAppStore();
+    const built = createStatementDocument(store, {
+      customerId: req.body?.customerId,
+      uploadedBy: req.user?.name || 'User',
+    });
+    if (!built?.document) return res.status(404).json({ ok: false, error: 'Customer not found.' });
+    const documents = built.reused ? store.documents || [] : [built.document, ...(store.documents || [])];
+    const saved = await writeAppStore({ ...store, documents, revision: Number(store.revision || 0) });
+    return res.json({ ok: true, document: built.document, reused: built.reused, revision: saved.revision });
+  } catch (error) {
+    const message = error instanceof Error ? error.message : 'Unable to generate statement.';
+    return res.status(400).json({ ok: false, error: message });
+  }
+});
+
+app.post('/api/documents/payment-details', authRequired, requirePermission('customers.manage', 'collections.manage', 'communications.send'), async (req, res) => {
+  try {
+    const store = await readAppStore();
+    const built = createPaymentDetailsDocument(store, {
+      customerId: req.body?.customerId,
+      uploadedBy: req.user?.name || 'User',
+    });
+    if (!built?.document) return res.status(404).json({ ok: false, error: 'Customer not found.' });
+    const saved = await writeAppStore({
+      ...store,
+      documents: [built.document, ...(store.documents || [])],
+      revision: Number(store.revision || 0),
+    });
+    return res.json({ ok: true, document: built.document, revision: saved.revision });
+  } catch (error) {
+    const message = error instanceof Error ? error.message : 'Unable to store payment details.';
+    return res.status(400).json({ ok: false, error: message });
+  }
+});
+
+app.get('/api/documents/:id', authRequired, requirePermission('customers.view'), async (req, res) => {
+  const store = await readAppStore();
+  const doc = (store.documents || []).find((item) => item.id === req.params.id);
+  if (!doc) return res.status(404).json({ ok: false, error: 'Document not found.' });
+  const buffer = readDocumentBuffer(doc.id);
+  if (!buffer) return res.status(404).json({ ok: false, error: 'File is missing on disk.' });
+  res.setHeader('Content-Type', doc.mime || 'application/octet-stream');
+  res.setHeader('Content-Disposition', `attachment; filename="${String(doc.filename || 'document').replace(/"/g, '')}"`);
+  return res.send(buffer);
 });
 
 function mergeServerOwned(serverItems = [], clientItems = [], isOwned) {
@@ -503,6 +596,15 @@ app.put('/api/data', authRequired, requirePermission(...WRITE_PERMISSIONS), asyn
       ),
       integrations: Array.isArray(body.integrations) ? body.integrations : [],
       automationRules: Array.isArray(body.automationRules) ? body.automationRules : [],
+      assignmentRules: Array.isArray(body.assignmentRules) ? body.assignmentRules : current.assignmentRules || [],
+      responseRules: Array.isArray(body.responseRules) ? body.responseRules : current.responseRules || [],
+      classifiedResponses: Array.isArray(body.classifiedResponses) ? body.classifiedResponses : current.classifiedResponses || [],
+      workTasks: Array.isArray(body.workTasks) ? body.workTasks : current.workTasks || [],
+      disputeCases: Array.isArray(body.disputeCases) ? body.disputeCases : current.disputeCases || [],
+      teams: Array.isArray(body.teams) ? body.teams : current.teams || [],
+      documents: mergeById(current.documents, Array.isArray(body.documents) ? body.documents : current.documents || [], undefined, {
+        keepServerOnly: true,
+      }),
       importMappings: body.importMappings && typeof body.importMappings === 'object' ? body.importMappings : current.importMappings || {},
       promiseEmailSeeded: Boolean(current.promiseEmailSeeded || body.promiseEmailSeeded),
       revision: Number(current.revision || 0),
@@ -1041,12 +1143,20 @@ function startCollectionsJobs() {
   const run = async () => {
     try {
       const store = await readAppStore();
-      const result = runCollectionsJobs(store);
-      if (result.promisesCreated || result.promisesBroken || result.seeded) {
+      const result = await runCollectionsJobs(store);
+      if (
+        result.promisesCreated ||
+        result.promisesBroken ||
+        result.seeded ||
+        result.classified ||
+        result.remindersSent ||
+        result.remindersQueued ||
+        result.documentsCreated
+      ) {
         await writeAppStore({ ...result.store, revision: Number(result.store.revision || 0) });
-        if (result.promisesCreated || result.promisesBroken) {
+        if (result.promisesCreated || result.promisesBroken || result.remindersSent || result.classified) {
           console.log(
-            `[jobs] email promises ${result.promisesCreated} · overdue broken ${result.promisesBroken}`,
+            `[jobs] classified ${result.classified || 0} · promises ${result.promisesCreated} · broken ${result.promisesBroken} · reminders ${result.remindersSent || 0}`,
           );
         }
       }
@@ -1056,7 +1166,7 @@ function startCollectionsJobs() {
   };
   setTimeout(run, 8000);
   setInterval(run, ms);
-  console.log(`[jobs] collections jobs every ${ms / 1000}s (email PTP + overdue promises)`);
+  console.log(`[jobs] collections jobs every ${ms / 1000}s (classify, reminders, promises)`);
 }
 
   server.ref();

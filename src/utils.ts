@@ -1,6 +1,7 @@
 import { addDays, differenceInCalendarDays, format, isValid, lastDayOfMonth, nextDay, parse, parseISO, startOfDay } from 'date-fns';
 import type { AccountStatus, RecoveryStatus } from './types';
 import { amountOwed, applyPaymentToBalance, hasCreditBalance, hasOutstandingBalance, isClearedOrCredit } from '../shared/balance.js';
+import { INTENT_BADGE_COLOR as intentBadgeColor, INTENT_LABELS as intentLabels } from '../shared/response-intents.js';
 
 export { amountOwed, applyPaymentToBalance, hasCreditBalance, hasOutstandingBalance, isClearedOrCredit };
 
@@ -94,6 +95,10 @@ export const daysOverdue = (dueDate?: string) => {
 };
 
 export { aliases, cellFromRow, completeMapping, findColumn, normalize, preferDetectedMapping } from '../shared/import-columns.js';
+export { INTENTS, WORK_QUEUES } from '../shared/response-intents.js';
+
+export const INTENT_LABELS = intentLabels as Record<string, string>;
+export const INTENT_BADGE_COLOR = intentBadgeColor as Record<string, string>;
 
 export function uid(prefix: string) {
   return `${prefix}-${Date.now()}-${Math.random().toString(36).slice(2, 7)}`;

@@ -50,7 +50,18 @@ export function preferCustomer(server, client) {
       status: server.status,
       collectionStage: server.collectionStage || client.collectionStage,
       lastContact: server.lastContact,
+      reminderSent: { ...(client.reminderSent || {}), ...(server.reminderSent || {}) },
+      automationPaused: server.automationPaused || client.automationPaused,
+      automationPausedReason: server.automationPausedReason || client.automationPausedReason,
+      automationPausedUntil: server.automationPausedUntil || client.automationPausedUntil,
     };
   }
-  return { ...server, ...client };
+  return {
+    ...server,
+    ...client,
+    reminderSent: { ...(server.reminderSent || {}), ...(client.reminderSent || {}) },
+    automationPaused: client.automationPaused ?? server.automationPaused,
+    automationPausedReason: client.automationPausedReason || server.automationPausedReason,
+    automationPausedUntil: client.automationPausedUntil || server.automationPausedUntil,
+  };
 }

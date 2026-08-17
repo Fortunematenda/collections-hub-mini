@@ -1,5 +1,9 @@
-import { parsePromiseFromReply, splitEmailThread, todayIso } from '../../shared/email-promise.js';
-import { amountOwed, hasOutstandingBalance } from '../../shared/balance.js';
+import { todayIso } from '../../shared/email-promise.js';
+import { applyInboundResponses, applyInboundResponsesAsync } from '../../shared/response-engine.js';
+import { applyReminderActions } from '../../shared/reminder-engine.js';
+import { classifyBest } from './ai-classifier.js';
+import { createPaymentDetailsDocument, createStatementDocument } from './documents.js';
+import { sendOutboundEmail, sendOutboundWhatsApp, smtpConfigured, twilioConfigured } from './outbound.js';
 
 function uid(prefix) {
   return `${prefix}-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 8)}`;
@@ -9,109 +13,8 @@ function money(amount) {
   return `R ${Number(amount || 0).toLocaleString('en-ZA', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`;
 }
 
-function safeDate(value) {
-  if (!value) return '—';
-  const date = new Date(`${String(value).slice(0, 10)}T00:00:00`);
-  if (Number.isNaN(date.getTime())) return String(value);
-  return date.toLocaleDateString('en-GB', { day: 'numeric', month: 'short', year: 'numeric' });
-}
-
-function isPaidOrZero(customer) {
-  return customer?.status === 'Cancelled' || !hasOutstandingBalance(customer?.outstanding);
-}
-
 export function applyEmailPromises(store) {
-  const customers = [...(store.customers || [])];
-  const promises = [...(store.promises || [])];
-  const followUps = [...(store.followUps || [])];
-  const activities = [...(store.activities || [])];
-  const communications = [...(store.communications || [])];
-  const queued = new Set();
-  let created = 0;
-
-  const pending = communications
-    .filter(
-      (item) =>
-        item.channel === 'Email' &&
-        item.direction === 'Incoming' &&
-        (!item.handledAs || item.handledAs === 'none'),
-    )
-    .sort((a, b) => String(b.createdAt || '').localeCompare(String(a.createdAt || '')));
-
-  for (const comm of pending) {
-    const customerIndex = customers.findIndex((item) => item.id === comm.customerId);
-    const customer = customers[customerIndex];
-    const body = splitEmailThread(comm.message).body || '';
-    const parsed = parsePromiseFromReply(body);
-
-    if (!parsed || !customer || isPaidOrZero(customer)) {
-      comm.handledAs = parsed ? 'skipped' : 'none';
-      continue;
-    }
-
-    comm.handledAs = 'promise';
-    if (queued.has(customer.id)) continue;
-    queued.add(customer.id);
-
-    const existingIndex = promises.findIndex((p) => p.customerId === customer.id && p.status === 'Pending');
-    const record = {
-      id: existingIndex >= 0 ? promises[existingIndex].id : uid('pr'),
-      companyId: customer.companyId,
-      customerId: customer.id,
-      amount: amountOwed(customer.outstanding),
-      promiseDate: parsed.date,
-      createdAt: existingIndex >= 0 ? promises[existingIndex].createdAt : new Date().toISOString(),
-      status: 'Pending',
-      customerComment: body.slice(0, 500),
-      internalNote: parsed.dateInferred
-        ? `Auto from email ${comm.id} — no date given, used ${safeDate(parsed.date)}.`
-        : `Auto from email ${comm.id}.`,
-    };
-    if (existingIndex >= 0) promises[existingIndex] = { ...promises[existingIndex], ...record };
-    else promises.unshift(record);
-
-    customers[customerIndex] = {
-      ...customer,
-      status: 'Promise to Pay',
-      collectionStage: 'Promise to Pay',
-      promisedDate: parsed.date,
-      promisedAmount: amountOwed(customer.outstanding),
-      nextFollowUp: parsed.date,
-      lastContact: `Promise · ${safeDate(parsed.date)}`,
-    };
-
-    const followIndex = followUps.findIndex(
-      (f) => f.customerId === customer.id && /follow up on promise/i.test(f.notes || ''),
-    );
-    const follow = {
-      id: followIndex >= 0 ? followUps[followIndex].id : uid('fu'),
-      companyId: customer.companyId,
-      customerId: customer.id,
-      followUpDate: parsed.date,
-      channel: 'Any',
-      assignedUser: customer.assignedCollector || 'System',
-      notes: `Follow up on promise of ${money(amountOwed(customer.outstanding))}`,
-      createdAt: followIndex >= 0 ? followUps[followIndex].createdAt : new Date().toISOString(),
-    };
-    if (followIndex >= 0) followUps[followIndex] = { ...followUps[followIndex], ...follow };
-    else followUps.unshift(follow);
-
-    activities.unshift({
-      id: uid('act'),
-      companyId: customer.companyId,
-      customerId: customer.id,
-      user: 'System',
-      action: existingIndex >= 0 ? 'Promise updated' : 'Promise created',
-      description: `Promise to pay ${money(amountOwed(customer.outstanding))} recorded for ${safeDate(parsed.date)}.`,
-      createdAt: new Date().toISOString(),
-    });
-    created += 1;
-  }
-
-  return {
-    store: { ...store, customers, promises, followUps, activities, communications },
-    created,
-  };
+  return applyInboundResponses(store);
 }
 
 export function breakOverduePromises(store, today = todayIso()) {
@@ -165,14 +68,104 @@ export function seedHistoricalEmailPromises(store) {
   };
 }
 
-export function runCollectionsJobs(store) {
+export async function fulfillDocumentRequests(store, requests = []) {
+  let documents = [...(store.documents || [])];
+  const communications = [...(store.communications || [])];
+  const activities = [...(store.activities || [])];
+  let created = 0;
+
+  for (const request of requests) {
+    const customer = (store.customers || []).find((item) => item.id === request.customerId);
+    const company = (store.companies || []).find((item) => item.id === request.companyId);
+    if (!customer) continue;
+    const built =
+      request.kind === 'statement'
+        ? createStatementDocument({ ...store, documents }, request)
+        : createPaymentDetailsDocument({ ...store, documents }, request);
+    if (!built?.document) continue;
+    if (!built.reused) {
+      documents = [built.document, ...documents];
+      created += 1;
+    }
+    const to = customer.email;
+    if (to && to.includes('@') && smtpConfigured() && built.text) {
+      try {
+        await sendOutboundEmail({
+          to,
+          subject:
+            request.kind === 'statement'
+              ? `Account statement ${customer.accountNo}${company?.name ? ` — ${company.name}` : ''}`
+              : `Payment details ${customer.accountNo}${company?.name ? ` — ${company.name}` : ''}`,
+          text: built.text,
+          html: built.html || undefined,
+          customerName: customer.name,
+          accountNo: customer.accountNo,
+        });
+        communications.unshift({
+          id: uid('cm'),
+          companyId: customer.companyId,
+          customerId: customer.id,
+          channel: 'Email',
+          direction: 'Outgoing',
+          subject: request.kind === 'statement' ? 'Account statement' : 'Payment details',
+          message: built.text,
+          status: 'Sent',
+          createdAt: new Date().toISOString(),
+          createdBy: 'System',
+          handledAs: 'classified',
+        });
+      } catch {
+        communications.unshift({
+          id: uid('cm'),
+          companyId: customer.companyId,
+          customerId: customer.id,
+          channel: 'Email',
+          direction: 'Outgoing',
+          subject: request.kind === 'statement' ? 'Account statement' : 'Payment details',
+          message: built.text,
+          status: 'Failed',
+          createdAt: new Date().toISOString(),
+          createdBy: 'System',
+        });
+      }
+    }
+    activities.unshift({
+      id: uid('act'),
+      companyId: customer.companyId,
+      customerId: customer.id,
+      user: 'System',
+      action: request.kind === 'statement' ? 'Statement generated' : 'Payment details prepared',
+      description:
+        request.kind === 'statement'
+          ? `Account statement stored as ${built.document.filename}.`
+          : `Payment instructions stored as ${built.document.filename}.`,
+      createdAt: new Date().toISOString(),
+    });
+  }
+
+  return { store: { ...store, documents, communications, activities }, created };
+}
+
+export async function runCollectionsJobs(store, options = {}) {
   const seeded = seedHistoricalEmailPromises(store);
-  const promised = applyEmailPromises(seeded.store);
-  const overdue = breakOverduePromises(promised.store);
+  const promised = await applyInboundResponsesAsync(seeded.store, {
+    classify: options.classify || classifyBest,
+    teams: seeded.store.teams || [],
+  });
+  const withDocs = await fulfillDocumentRequests(promised.store, promised.documentRequests || []);
+  const overdue = breakOverduePromises(withDocs.store);
+  const reminded = await applyReminderActions(overdue.store, {
+    sendEmail: options.sendEmail || (smtpConfigured() ? sendOutboundEmail : undefined),
+    sendWhatsApp: options.sendWhatsApp || (twilioConfigured() ? sendOutboundWhatsApp : undefined),
+  });
   return {
-    store: overdue.store,
+    store: reminded.store,
     promisesCreated: promised.created,
     promisesBroken: overdue.broken,
+    classified: promised.classified,
+    remindersSent: reminded.sent,
+    remindersQueued: reminded.queued,
+    documentsCreated: withDocs.created,
     seeded: seeded.seeded,
   };
 }

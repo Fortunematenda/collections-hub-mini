@@ -8,6 +8,7 @@ export type NavKey =
   | 'imports'
   | 'templates'
   | 'communications'
+  | 'mywork'
   | 'integrations'
   | 'automations'
   | 'users'
@@ -62,6 +63,11 @@ export type CollectionStage =
   | 'Contacted'
   | 'Promise to Pay'
   | 'Payment Pending'
+  | 'Payment Verification'
+  | 'Extension Requested'
+  | 'Dispute'
+  | 'Cancellation Requested'
+  | 'Payment Arrangement Review'
   | 'Paid'
   | 'Unresponsive'
   | 'Escalated'
@@ -136,6 +142,11 @@ export type Company = {
   followUpIntervalDays?: number;
   defaultRecoveryBehaviour?: string;
   collectionRules?: string;
+  bankName?: string;
+  bankAccountName?: string;
+  bankAccountNumber?: string;
+  bankBranchCode?: string;
+  paymentInstructions?: string;
 };
 
 export type Customer = {
@@ -177,6 +188,18 @@ export type Customer = {
   archived?: boolean;
   cancelledAt?: string;
   cancellationReason?: string;
+  automationPaused?: boolean;
+  automationPausedReason?: string;
+  automationPausedUntil?: string;
+  reminderSent?: Record<string, string>;
+  nextAction?: string;
+  nextActionDue?: string;
+  nextActionAssignee?: string;
+  nextActionPriority?: 'Low' | 'Medium' | 'High';
+  technicalIssuePending?: boolean;
+  contactInvalid?: boolean;
+  sensitiveAccount?: boolean;
+  lastResponseIntent?: string;
 };
 
 export type Equipment = {
@@ -280,7 +303,11 @@ export type Communication = {
   externalId?: string;
   messageId?: string;
   readAt?: string;
-  handledAs?: 'promise' | 'none' | 'skipped' | 'seeded';
+  handledAs?: 'promise' | 'none' | 'skipped' | 'seeded' | 'classified';
+  detectedIntent?: string;
+  classificationId?: string;
+  hasAttachment?: boolean;
+  automationRuleId?: string;
 };
 
 export type Note = {
@@ -321,4 +348,159 @@ export type AppToast = {
   id: string;
   type: 'success' | 'error' | 'info';
   message: string;
+};
+
+export type ResponseIntent =
+  | 'PAYMENT_CLAIMED'
+  | 'PROOF_OF_PAYMENT_RECEIVED'
+  | 'PROMISE_TO_PAY'
+  | 'PAYMENT_EXTENSION_REQUEST'
+  | 'PARTIAL_PAYMENT'
+  | 'BALANCE_DISPUTE'
+  | 'CANCELLATION_REQUEST'
+  | 'EQUIPMENT_COLLECTION_REQUEST'
+  | 'CUSTOMER_MOVED'
+  | 'TECHNICAL_SERVICE_ISSUE'
+  | 'FINANCIAL_DIFFICULTY'
+  | 'CALLBACK_REQUEST'
+  | 'WRONG_CONTACT'
+  | 'SENSITIVE_ACCOUNT'
+  | 'STATEMENT_REQUEST'
+  | 'PAYMENT_DETAILS_REQUEST'
+  | 'NEEDS_REVIEW';
+
+export type ClassifiedResponse = {
+  id: string;
+  companyId: string;
+  customerId: string;
+  communicationId?: string;
+  channel: CommChannel | 'Manual';
+  direction: CommDirection;
+  rawMessage: string;
+  detectedIntent: ResponseIntent | string;
+  appliedIntent?: ResponseIntent | string;
+  confidence: number;
+  detectedEntities: Record<string, unknown>;
+  classificationSource: 'Rule' | 'AI' | 'Manual';
+  originalIntent?: string;
+  overrideReason?: string;
+  reviewedBy?: string;
+  reviewedAt?: string;
+  actionsApplied?: string[];
+  previousStage?: string;
+  newStage?: string;
+  assignedUser?: string;
+  needsReview?: boolean;
+  dateRequired?: boolean;
+  createdAt: string;
+};
+
+export type WorkTaskStatus = 'Pending' | 'Attempted' | 'Completed' | 'Rescheduled' | 'Awaiting Verification' | 'Verified' | 'Partially Verified' | 'Rejected' | 'Invalid POP' | 'Open';
+
+export type WorkTask = {
+  id: string;
+  companyId: string;
+  customerId: string;
+  communicationId?: string;
+  responseId?: string;
+  type: string;
+  title: string;
+  queue: string;
+  status: WorkTaskStatus | string;
+  priority?: 'Low' | 'Medium' | 'High';
+  dueDate?: string;
+  dueTime?: string;
+  assignedUser?: string;
+  notes?: string;
+  verificationStatus?: string;
+  createdAt: string;
+  completedAt?: string;
+};
+
+export type DisputeCase = {
+  id: string;
+  companyId: string;
+  customerId: string;
+  responseId?: string;
+  communicationId?: string;
+  reason: string;
+  amountDisputed?: number;
+  dateRaised: string;
+  assignedUser?: string;
+  investigationNotes?: string;
+  resolution?: string;
+  dateResolved?: string;
+  outcome?: string;
+  status:
+    | 'Open'
+    | 'Under Review'
+    | 'Waiting for Customer'
+    | 'Waiting for Company'
+    | 'Resolved — Customer Correct'
+    | 'Resolved — Balance Correct'
+    | 'Partially Resolved'
+    | 'Closed';
+  createdAt: string;
+};
+
+export type AssignmentType = 'Specific User' | 'Team' | 'Queue' | 'Round Robin' | 'Existing Account Owner' | 'Manual Assignment';
+
+export type AssignmentRule = {
+  id: string;
+  companyId: string;
+  name: string;
+  triggerIntent: string;
+  triggerStage?: string;
+  assignmentType: AssignmentType;
+  assigneeUserId?: string;
+  assigneeName?: string;
+  assigneeTeamId?: string;
+  assigneeNames?: string[];
+  queue?: string;
+  priority?: 'Low' | 'Medium' | 'High';
+  autoAssign?: boolean;
+  active: boolean;
+  roundRobinIndex?: number;
+  createdAt: string;
+  updatedAt: string;
+};
+
+export type ResponseRule = {
+  id: string;
+  companyId: string;
+  name: string;
+  intent: string;
+  changeStage?: CollectionStage | string;
+  createPromise?: boolean;
+  pauseReminders?: boolean;
+  createTask?: boolean;
+  taskTitle?: string;
+  createDispute?: boolean;
+  createRecovery?: boolean;
+  followUpDaysAfterPromise?: number;
+  active: boolean;
+};
+
+export type Team = {
+  id: string;
+  companyId: string;
+  name: string;
+  memberNames: string[];
+  memberUserIds?: string[];
+  active: boolean;
+  createdAt: string;
+};
+
+export type CustomerDocument = {
+  id: string;
+  companyId: string;
+  customerId: string;
+  kind: 'statement' | 'invoice' | 'pop' | 'payment-details' | 'other';
+  filename: string;
+  mime: string;
+  size: number;
+  uploadedBy: string;
+  communicationId?: string;
+  taskId?: string;
+  createdAt: string;
 };

@@ -4,7 +4,7 @@ import { Building2, Filter, MessagesSquare, Search } from 'lucide-react';
 import { useNavigate } from 'react-router-dom';
 import { EmptyState, PageHero } from '../components/ui';
 import { useApp } from '../context/AppContext';
-import { splitEmailThread, safeDateTime, communicationCardClass, communicationRowClass } from '../utils';
+import { splitEmailThread, safeDateTime, communicationCardClass, communicationRowClass, INTENT_BADGE_COLOR, INTENT_LABELS } from '../utils';
 import type { CommChannel, CommDirection, CommStatus } from '../types';
 
 const channelColor: Record<CommChannel, string> = {
@@ -17,13 +17,14 @@ const channelColor: Record<CommChannel, string> = {
 
 export default function Communications() {
   const navigate = useNavigate();
-  const { company, companyCommunications, getCustomer } = useApp();
+  const { company, companyCommunications, getCustomer, classifiedResponses } = useApp();
   const all = companyCommunications();
 
   const [search, setSearch] = useState('');
   const [channel, setChannel] = useState<string | null>('All channels');
   const [direction, setDirection] = useState<string | null>('All directions');
   const [status, setStatus] = useState<string | null>('All statuses');
+  const [intent, setIntent] = useState<string | null>('All intents');
   const [dateFrom, setDateFrom] = useState('');
   const [dateTo, setDateTo] = useState('');
 
@@ -31,20 +32,28 @@ export default function Communications() {
     const q = search.toLowerCase().trim();
     return all.filter((c) => {
       const customer = getCustomer(c.customerId);
-      const hay = [c.message, c.subject, c.createdBy, customer?.name, customer?.accountNo]
+      const classified = classifiedResponses.find((item) => item.communicationId === c.id);
+      const hay = [c.message, c.subject, c.createdBy, customer?.name, customer?.accountNo, customer?.phone, classified?.detectedIntent]
         .filter(Boolean)
         .join(' ')
         .toLowerCase();
       if (q && !hay.includes(q)) return false;
       if (channel && channel !== 'All channels' && c.channel !== channel) return false;
       if (direction && direction !== 'All directions' && c.direction !== direction) return false;
-      if (status && status !== 'All statuses' && c.status !== status) return false;
+      if (status && status !== 'All statuses') {
+        if (status === 'Unread' && c.readAt) return false;
+        if (status === 'Needs Review' && !classified?.needsReview) return false;
+        if (status !== 'Unread' && status !== 'Needs Review' && c.status !== status) return false;
+      }
+      if (intent && intent !== 'All intents') {
+        if ((classified?.detectedIntent || c.detectedIntent) !== intent) return false;
+      }
       const day = c.createdAt.slice(0, 10);
       if (dateFrom && day < dateFrom) return false;
       if (dateTo && day > dateTo) return false;
       return true;
     });
-  }, [all, search, channel, direction, status, dateFrom, dateTo, getCustomer]);
+  }, [all, search, channel, direction, status, intent, dateFrom, dateTo, getCustomer, classifiedResponses]);
 
   return (
     <>
@@ -56,7 +65,7 @@ export default function Communications() {
           </>
         }
         title="Communication centre"
-        description="Review WhatsApp, email, phone and internal notes logged for this company's collection activity."
+        description="Inbound customer replies are classified here. Search by customer, account, phone, message or intent."
         actions={
           <Badge size="lg" variant="light" color="indigo">
             {filtered.length} messages
@@ -71,7 +80,7 @@ export default function Communications() {
               className="search-wrap"
               value={search}
               onChange={(e) => setSearch(e.currentTarget.value)}
-              placeholder="Search message, customer, subject..."
+              placeholder="Search customer, account, phone, message, intent..."
               leftSection={<Search size={14} />}
             />
             <Select
@@ -91,7 +100,16 @@ export default function Communications() {
               className="status-filter"
               value={status}
               onChange={setStatus}
-              data={['All statuses', 'Queued', 'Sent', 'Delivered', 'Failed', 'Logged']}
+              data={['All statuses', 'Unread', 'Needs Review', 'Queued', 'Sent', 'Delivered', 'Failed', 'Logged']}
+            />
+            <Select
+              className="status-filter"
+              value={intent}
+              onChange={setIntent}
+              data={[
+                { value: 'All intents', label: 'All intents' },
+                ...Object.entries(INTENT_LABELS).map(([value, label]) => ({ value, label })),
+              ]}
             />
             <TextInput
               type="date"
@@ -120,18 +138,21 @@ export default function Communications() {
                 <Table.Th>Channel</Table.Th>
                 <Table.Th>Direction</Table.Th>
                 <Table.Th>Status</Table.Th>
+                <Table.Th>Intent</Table.Th>
                 <Table.Th>Message</Table.Th>
               </Table.Tr>
             </Table.Thead>
             <Table.Tbody>
               {filtered.map((c) => {
                 const customer = getCustomer(c.customerId);
+                const classified = classifiedResponses.find((item) => item.communicationId === c.id);
+                const detected = String(classified?.detectedIntent || c.detectedIntent || '');
                 return (
                   <Table.Tr
                     key={c.id}
                     className={communicationRowClass(c)}
                     style={{ cursor: 'pointer' }}
-                    onClick={() => navigate('/customers/' + c.customerId + '?tab=communications')}
+                    onClick={() => navigate('/customers/' + c.customerId + '?tab=communications&comm=' + c.id)}
                   >
                     <Table.Td>
                       <Text size="xs" c="dimmed">
@@ -158,6 +179,16 @@ export default function Communications() {
                       <Badge variant="outline" size="sm" color="gray">
                         {c.status as CommStatus}
                       </Badge>
+                    </Table.Td>
+                    <Table.Td>
+                      {detected ? (
+                        <Badge variant="light" size="sm" color={INTENT_BADGE_COLOR[detected] || 'gray'}>
+                          {INTENT_LABELS[detected] || detected}
+                          {classified?.confidence != null ? ` · ${Math.round(classified.confidence * 100)}%` : ''}
+                        </Badge>
+                      ) : (
+                        <Text size="xs" c="dimmed">—</Text>
+                      )}
                     </Table.Td>
                     <Table.Td>
                       {c.channel === 'Email' ? (
@@ -191,7 +222,7 @@ export default function Communications() {
               <div
                 className={`mobile-account-card ${communicationCardClass(c)}`}
                 key={c.id}
-                onClick={() => navigate('/customers/' + c.customerId)}
+                onClick={() => navigate('/customers/' + c.customerId + '?tab=communications&comm=' + c.id)}
               >
                 <div className="mobile-account-top">
                   <div>
