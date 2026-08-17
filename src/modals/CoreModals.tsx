@@ -649,17 +649,20 @@ export function SendMessageModal({
             }
             onClick={async () => {
               setSaving(true);
-              const result = await sendMessage({
-                customerId: customer.id,
-                channel,
-                message: message.trim(),
-                subject: channel === 'Email' ? subject : undefined,
-                isReply,
-                inReplyTo: threadId || undefined,
-                references: threadId || undefined,
-              });
-              setSaving(false);
-              if (result.ok) onClose();
+              try {
+                const result = await sendMessage({
+                  customerId: customer.id,
+                  channel,
+                  message: message.trim(),
+                  subject: channel === 'Email' ? subject : undefined,
+                  isReply,
+                  inReplyTo: threadId || undefined,
+                  references: threadId || undefined,
+                });
+                if (result.ok) onClose();
+              } finally {
+                setSaving(false);
+              }
             }}
           >
             {isReply ? 'Send reply' : channel === 'Email' ? 'Send Email' : 'Send WhatsApp'}

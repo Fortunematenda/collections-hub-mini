@@ -8,8 +8,12 @@ function envPass() {
 }
 
 function mailIpFamily() {
-  const n = Number(process.env.SMTP_FAMILY || process.env.MAIL_FAMILY || '');
-  return n === 4 || n === 6 ? n : undefined;
+  const n = Number(String(process.env.SMTP_FAMILY || process.env.MAIL_FAMILY || '').trim());
+  if (n === 4 || n === 6) return n;
+  if (process.env.NODE_ENV === 'production' && /cp69\.domains\.co\.za/i.test(process.env.SMTP_HOST || process.env.IMAP_HOST || '')) {
+    return 6;
+  }
+  return undefined;
 }
 
 export function imapSettings() {

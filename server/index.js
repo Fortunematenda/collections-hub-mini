@@ -153,8 +153,12 @@ const revokedTokens = new Set();
 let resetTokens = [];
 
 function mailIpFamily() {
-  const n = Number(process.env.SMTP_FAMILY || process.env.MAIL_FAMILY || '');
-  return n === 4 || n === 6 ? n : undefined;
+  const n = Number(String(process.env.SMTP_FAMILY || process.env.MAIL_FAMILY || '').trim());
+  if (n === 4 || n === 6) return n;
+  if (process.env.NODE_ENV === 'production' && /cp69\.domains\.co\.za/i.test(process.env.SMTP_HOST || '')) {
+    return 6;
+  }
+  return undefined;
 }
 
 function smtpSettings() {
@@ -183,6 +187,9 @@ function createTransport() {
     port: smtp.port,
     secure: smtp.secure,
     ...(smtp.family ? { family: smtp.family } : {}),
+    connectionTimeout: 12000,
+    greetingTimeout: 12000,
+    socketTimeout: 25000,
     auth: { user: smtp.user, pass: smtp.pass },
   });
 }
@@ -812,6 +819,7 @@ app.post('/api/mail/send', authRequired, requirePermission('communications.send'
 
     const transporter = createTransport();
     const smtp = smtpSettings();
+    console.log(`[mailer] sending to ${recipient} via ${smtp.host}`);
     const headers = {};
     if (customerName) headers['X-Collections-Customer'] = String(customerName);
     if (accountNo) headers['X-Collections-Account'] = String(accountNo);
@@ -996,7 +1004,7 @@ async function start() {
       console.log('[mailer] smtp NOT configured — set SMTP_* in .env');
     } else {
       const smtp = smtpSettings();
-      console.log(`[mailer] smtp target ${smtp.host}:${smtp.port} as ${smtp.from}`);
+      console.log(`[mailer] smtp target ${smtp.host}:${smtp.port} as ${smtp.from}${smtp.family ? ` ipv${smtp.family}` : ''}`);
       createTransport()
         .verify()
         .then(() => console.log('[mailer] smtp credentials verified'))

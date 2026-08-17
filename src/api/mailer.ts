@@ -29,6 +29,7 @@ export async function sendMailViaApi(payload: SendMailPayload): Promise<SendMail
         Authorization: `Bearer ${token}`,
       },
       body: JSON.stringify(payload),
+      signal: AbortSignal.timeout(25000),
     });
     const data = (await res.json().catch(() => ({}))) as {
       ok?: boolean;
@@ -43,10 +44,14 @@ export async function sendMailViaApi(payload: SendMailPayload): Promise<SendMail
       return { ok: false, error: data.error || `Email failed (${res.status})` };
     }
     return { ok: true, messageId: data.messageId, accepted: data.accepted };
-  } catch {
+  } catch (error) {
+    const timedOut =
+      error instanceof DOMException && (error.name === 'TimeoutError' || error.name === 'AbortError');
     return {
       ok: false,
-      error: 'Mail server is unreachable. Start it with npm run server (or npm run dev).',
+      error: timedOut
+        ? 'Email send timed out. The mail server did not respond in time.'
+        : 'Mail server is unreachable. Start it with npm run server (or npm run dev).',
     };
   }
 }
