@@ -943,8 +943,18 @@ app.post('/api/whatsapp/send', authRequired, requirePermission('communications.s
 // Production: serve Vite build from ../dist (same origin as /api)
 const distDir = path.resolve(__dirname, '../dist');
 if (existsSync(distDir)) {
-  app.use(express.static(distDir));
+  app.use(
+    express.static(distDir, {
+      etag: true,
+      setHeaders(res, filePath) {
+        if (filePath.endsWith(`${path.sep}index.html`) || filePath.endsWith('/index.html')) {
+          res.setHeader('Cache-Control', 'no-store, no-cache, must-revalidate');
+        }
+      },
+    }),
+  );
   app.get(/^(?!\/api).*/, (_req, res) => {
+    res.setHeader('Cache-Control', 'no-store, no-cache, must-revalidate');
     res.sendFile(path.join(distDir, 'index.html'));
   });
   console.log(`[web] serving static UI from ${distDir}`);
